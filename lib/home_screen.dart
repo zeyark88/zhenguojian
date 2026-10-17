@@ -1083,10 +1083,10 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
                           size: 48,
                           color: Color(0xFFFF765F),
                         ),
-                        children: [
-                          const Text('独立运行，打开即可浏览和播放。观看记录与追剧收藏保存在当前设备。'),
-                          const SizedBox(height: 12),
-                        ],
+                         children: [
+                           const Text('独立运行，打开即可浏览和播放。观看记录与追剧收藏保存在当前设备。'),
+                           const SizedBox(height: 12),
+                         ],
                       );
                     }
                   },
