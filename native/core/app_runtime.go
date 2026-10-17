@@ -244,7 +244,8 @@ func newNativeEngine(directory string) (*nativeEngine, error) {
 	cfg.dataDir = directory
 	router := &proxyRouter{}
 	d := &Downloader{cfg: cfg, providerHosts: map[string]string{}, proxyRouter: router,
-		limiter: newRequestLimiter(3, 250*time.Millisecond), diagnostics: newDiagnosticLog(directory)}
+		// 流畅优化：与 defaultResourceSettings 保持一致（后续 applyResourceSettings 会再同步一次）。
+		limiter: newRequestLimiter(6, 150*time.Millisecond), diagnostics: newDiagnosticLog(directory)}
 	transport := http.DefaultTransport.(*http.Transport).Clone()
 	transport.TLSClientConfig = &tls.Config{MinVersion: tls.VersionTLS12}
 	transport.MaxIdleConnsPerHost = 8

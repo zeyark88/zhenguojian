@@ -61,7 +61,9 @@ class PlaybackPreloader extends ChangeNotifier {
       return;
     }
     final ticket = _generation;
-    _delay = Timer(const Duration(milliseconds: 600), () async {
+    // 流畅优化：预载触发从 600ms 提前到 350ms，切集时下一集播放地址/预取数据
+    // 更早就绪，减少切集等待；仍保留短暂防抖，避免连续快速滑动频繁发起预载。
+    _delay = Timer(const Duration(milliseconds: 350), () async {
       _delay = null;
       loading = true;
       notifyListeners();

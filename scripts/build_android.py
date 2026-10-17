@@ -32,7 +32,10 @@ with china_mirror_environment(environment, options.cn_mirrors) as env, mirrored_
     subprocess.run([sys.executable, str(root / 'scripts' / 'build_native.py'), '--platform', 'android', *abi_args, *variant.arguments],
                    cwd=root, env=env, check=True)
     subprocess.run([flutter, 'pub', 'get', '--enforce-lockfile'], cwd=root, env=env, check=True)
-    build_args = [flutter, 'build', 'apk', '--release', '--split-per-abi', '--no-pub', *variant.flutter_arguments]
+    # 性能优化：AOT 符号混淆 + 剥离（--obfuscate），减小 libapp.so 并加快加载；
+    # 符号表落盘到 build/symbols 供崩溃定位，不进入安装包。
+    build_args = [flutter, 'build', 'apk', '--release', '--split-per-abi', '--no-pub',
+                  '--obfuscate', '--split-debug-info=build/symbols', *variant.flutter_arguments]
     if options.abi:
         targets = {'arm64-v8a': 'android-arm64', 'armeabi-v7a': 'android-arm', 'x86_64': 'android-x64'}
         build_args += ['--target-platform', ','.join(targets[abi] for abi in options.abi)]

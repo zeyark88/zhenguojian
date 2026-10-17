@@ -25,7 +25,10 @@ type nativeResourceSettings struct {
 }
 
 func defaultResourceSettings() nativeResourceSettings {
-	return nativeResourceSettings{ProxyMode: "auto", CatalogConcurrency: 3, CatalogIntervalMS: 250, DownloadConcurrency: 2}
+	// 流畅优化：目录并发从 3 提到 6（全站源 6 源首次请求可完全并行；
+	// 每源 gate 仍限单请求并发，单站源不受影响），同源请求间距 250→150ms，
+	// 显著缩短多源全选时进入首页的等待。
+	return nativeResourceSettings{ProxyMode: "auto", CatalogConcurrency: 6, CatalogIntervalMS: 150, DownloadConcurrency: 2}
 }
 
 func (settings nativeResourceSettings) validate() error {

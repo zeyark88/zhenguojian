@@ -1283,6 +1283,22 @@ class _FeedPageState extends State<_FeedPage> with WidgetsBindingObserver {
   /// 迟迟不起播的容忍轮次（约 15 秒，超过即自动恢复一次）。
   static const _firstFrameTicksLimit = 15;
 
+  /// 用户是否**主动暂停**（0.6.11 新增）。
+  ///
+  /// 存在原因：健康检查需要区分两种 `playing == false`：
+  /// - **用户主动暂停** → 必须保持暂停，绝不能自动恢复；
+  /// - **播放中断**（起播后卡住 / 缓冲耗尽 / 解码停顿）→ 应当自动恢复。
+  ///
+  /// 只有记录了这个标记，才能在"跑不动"的兜底里安全地区分两者。
+  /// 置位：`_togglePlayback` 暂停时；清除：恢复播放、重新加载、切集时。
+  bool _userPaused = false;
+
+  /// 起播后又掉回停止态的连续轮次（0.6.11 新增，用于第三条兜底）。
+  int _stalledTicks = 0;
+
+  /// 起播后停住的容忍轮次（约 10 秒）。
+  static const _stalledTicksLimit = 10;
+
   /// 应用是否在前台。后台时不判定"卡住"，否则会被误判。
   bool _foreground = true;
 
@@ -1763,6 +1779,37 @@ class _FeedPageState extends State<_FeedPage> with WidgetsBindingObserver {
         now: DateTime.now(),
       )) {
         unawaited(_recover());
+        return;
+      }
+
+      // 兜底三（0.6.11 新增，用户反馈"偶发下一个视频纯黑无文字、不播放"）：
+      //
+      // 覆盖前两条**都管不到**的盲区：
+      //   `_awaitingFirstFrame == false`（已被"短暂起播"清掉）
+      //   且 `playing == false`（随即卡住/缓冲耗尽）
+      //   且 `_loading == false`、`_error == null`
+      // → 兜底一要求 `_awaitingFirstFrame`、兜底二要求 `playing == true`，
+      //   两条同时失效，页面**永久纯黑无文字**。
+      //
+      // 这正是"播放器短暂报告 playing=true（清掉等待标记）→ 立刻卡住"的产物：
+      // 从状态上它既不是"从未起播"，也不是"正在播放却卡住"，
+      // 而是第三条路——**起播过，又掉回停止态**。
+      //
+      // 判定条件必须排除 `_userPaused`，否则用户的暂停会被当成故障自动播回去
+      // （那就是另一个已修问题 1 的翻版）。
+      if (_ready &&
+          !current.state.playing &&
+          !current.state.completed &&
+          _foreground &&
+          !_userPaused) {
+        _stalledTicks++;
+        if (_stalledTicks >= _stalledTicksLimit) {
+          _stalledTicks = 0;
+          unawaited(_recover());
+          return;
+        }
+      } else {
+        _stalledTicks = 0;
       }
     });
     for (final stream in [
@@ -1948,6 +1995,22 @@ class _FeedPageState extends State<_FeedPage> with WidgetsBindingObserver {
     _ready = false;
     _plan = null;
     _loading = true;
+    // 0.6.11 修复（用户反馈"偶发下一个视频黑屏不播放"）：
+    //
+    // `_releasePlayer()` 之前**没有清 `_awaitingFirstFrame` / `_firstFrameTicks`**。
+    // 若本页在"等待首帧"期间被滑走（`_awaitingFirstFrame == true`），
+    // 该标记会残留到下次回来。回来时 `_prepare()` 若因 `_ready` 等条件提前返回，
+    // 就出现 `_loading == false`（被别处改掉）且 `_awaitingFirstFrame == true`
+    // 且 `playing == false` 的中间态 —— 此时：
+    //   - 加载提示条件 `_loading || (_awaitingFirstFrame && !playing)` 本应成立；
+    //   - 但若 `_awaitingFirstFrame` 也被别处清掉，就**两者皆假** → **纯黑无文字**。
+    // 因此释放播放器时必须把"等待首帧"这套状态**彻底归零**，
+    // 让下次 `_prepare()` 从干净状态开始。
+    _awaitingFirstFrame = false;
+    _firstFrameTicks = 0;
+    // 0.6.11：连同"用户暂停""停住计数"一起归零，避免残留到下次重建。
+    _userPaused = false;
+    _stalledTicks = 0;
     if (player != null) unawaited(player.dispose());
   }
 
@@ -2124,8 +2187,31 @@ class _FeedPageState extends State<_FeedPage> with WidgetsBindingObserver {
     // 顺带消除一个隐患：`cycle` 在状态不同步时可能"翻反"（该停却播），
     // 直接设值不会出现这种情况。
     unawaited(willPlay ? player.play() : player.pause());
-    // 暂停时立刻落盘，避免用户暂停后直接退出导致进度丢失。
-    if (!willPlay) unawaited(_saveProgress());
+    // 0.6.11 修复（用户反馈"双击暂停后出现正在加载视频提示，过一会儿自己播放"）：
+    //
+    // 根因：`_awaitingFirstFrame` 在 `_prepare()` 成功后置 true，本意是"等首帧"，
+    // 只有 `playing == true` 才会清掉（见 playing 流监听）。
+    // 若用户在首帧到达前就暂停，`playing` 一直是 false → 该标记**永远留着**
+    // → 健康检查的"从未起播"兜底（`_awaitingFirstFrame && !playing`）成立
+    // → 每秒计数，**15 秒后触发 `_recover()` 自动重播**。
+    // 表现就是：暂停 → 加载提示重新出现 → 过一会儿自己开始播。
+    //
+    // 修法：**用户主动暂停 = 明确意图**，必须立即结束"等待首帧"状态，
+    // 否则健康检查会把"用户暂停"误判成"从未起播"。
+    if (!willPlay) {
+      _awaitingFirstFrame = false;
+      _firstFrameTicks = 0;
+      // 0.6.11：记录"用户主动暂停"，供健康检查兜底三区分
+      // "用户暂停" 与 "起播后卡住"——否则暂停会被当成故障自动播回去。
+      _userPaused = true;
+      _stalledTicks = 0;
+      // 暂停时立刻落盘，避免用户暂停后直接退出导致进度丢失。
+      unawaited(_saveProgress());
+    } else {
+      // 用户恢复播放：解除暂停标记，健康检查恢复正常兜底。
+      _userPaused = false;
+      _stalledTicks = 0;
+    }
     // 0.6.3 修复（用户反馈"双击恢复后中央图标仍是暂停"）：
     // 原先这里不重建，中央播放图标与底部播放/暂停键要等下一次
     // 整页 setState（如自动隐藏计时器到期）才更新，表现为"视频在播、图标不变"。
@@ -2516,6 +2602,10 @@ class _FeedPageState extends State<_FeedPage> with WidgetsBindingObserver {
         // 注意：有错误时不能显示加载提示，否则会盖住"点击重试"。
         _awaitingFirstFrame = _error == null;
         _firstFrameTicks = 0;
+        // 0.6.11：新内容开始加载 = 一次全新的播放，
+        // 用户之前的暂停意图不再适用（否则新一集会"以为用户暂停"而不恢复）。
+        _userPaused = false;
+        _stalledTicks = 0;
       });
       // 加载成功：复位健康检查与恢复计数（0.6.0）。
       // 不复位的话，上一次的失败计数会累计，导致本次偶发卡顿直接判为"停止"。
@@ -3329,8 +3419,15 @@ class _FeedPageState extends State<_FeedPage> with WidgetsBindingObserver {
                         ),
                       ),
                     ),
+                    // 与竖屏主层保持一致（0.6.11）：补上"已就绪但无画面"的兜底，
+                    // 避免全屏时出现纯黑无文字。
                     if (_loading ||
-                        (_awaitingFirstFrame && !(_player?.state.playing ?? false)))
+                        (_awaitingFirstFrame && !(_player?.state.playing ?? false)) ||
+                        (!_userPaused &&
+                            _ready &&
+                            _error == null &&
+                            !(_player?.state.playing ?? false) &&
+                            (_player?.state.width ?? 0) <= 0))
                       const IgnorePointer(
                         child: LoadingHint(message: '正在加载视频…', dark: true),
                       )
@@ -3732,7 +3829,24 @@ class _FeedPageState extends State<_FeedPage> with WidgetsBindingObserver {
             ),
           ),
         ),
-        if (_loading || (_awaitingFirstFrame && !(state?.playing ?? false)))
+        // 0.6.11 修复（用户反馈"偶发下一个视频黑屏不播放"，且是**纯黑无文字**）：
+        //
+        // 纯黑无文字意味着**加载提示与错误提示都没渲染**，
+        // 即 `_loading == false`、`_awaitingFirstFrame == false`、`_error == null`
+        // 三者同时成立，但画面又没出来 —— 这是"中间态漏洞"。
+        //
+        // 兜底条件补上「已就绪但播放器没有任何画面」：
+        // 只要本页已 `_ready`、无错误、且播放器**既没在播也没有可用帧**，
+        // 就显示加载提示，绝不让用户面对一块没有任何文字的黑屏。
+        if (_loading ||
+            (_awaitingFirstFrame && !(state?.playing ?? false)) ||
+            // 注意：必须排除 `_userPaused`，否则用户暂停后（此时 width 可能为 0）
+            // 会错误地显示"正在加载视频…"。
+            (!_userPaused &&
+                _ready &&
+                _error == null &&
+                !(state?.playing ?? false) &&
+                (state?.width ?? 0) <= 0))
           const IgnorePointer(
             child: LoadingHint(message: '正在加载视频…', dark: true),
           )

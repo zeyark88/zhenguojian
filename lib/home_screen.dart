@@ -5,8 +5,6 @@ import 'package:flutter/services.dart';
 import 'package:media_kit/media_kit.dart';
 
 import 'app_layout.dart';
-import 'app_updater.dart';
-import 'about_credit.dart';
 import 'app_bottom_navigation.dart';
 import 'core_bridge.dart';
 import 'catalog_filters.dart';
@@ -109,7 +107,18 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
         .where((site) => _multiSources.contains(site.id))
         .toList();
     if (sites.isEmpty) return null;
-    final name = sites.length == widget.store.sources.length
+    // 0.6.11 修复（用户反馈"仅选两个播放器也会提示切换到全部源"）：
+    //
+    // 原先判据是 `sites.length == widget.store.sources.length` —— 只比**数量**。
+    // 但源是分组的（黄果视频 / 黄果 AI / 黄果旧版同属 `huangguo` 组），
+    // 用户勾选「黄果」这一项就会一次选中 3 个站点；
+    // 若当前可用源恰好也是 3 个，数量相等 → 误判为「全部站源」。
+    // 正确判据必须是**选中的 id 集合 == 可用的 id 集合**，而不是数量相等。
+    final allIds = widget.store.sources.map((site) => site.id).toSet();
+    final pickedIds = sites.map((site) => site.id).toSet();
+    final isAll = allIds.length == pickedIds.length &&
+        allIds.containsAll(pickedIds);
+    final name = isAll
         ? '全部站源'
         : sites.map((site) => site.entryName).join('+');
     return SourceGroup('multi', name, sites);
@@ -270,95 +279,21 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
     }
   }
 
-  /// AppBar 的站源菜单：**多选勾选**。
+  /// AppBar 的站源入口：点开**弹窗**，勾选后按「确定」才生效。
   ///
-  /// 用户明确要求「勾选」= 可多选，因此这里不使用 PopupMenuButton 的
-  /// 单选 onSelected 语义，而是自己维护选中集合，点击后立即生效。
-  /// 再次点击已勾选项即取消勾选。
+  /// 0.6.11 改版（用户反馈）：
+  /// 原先是 `PopupMenuButton`，**点一下菜单项就立刻生效并重载列表**，导致：
+  /// ① 想选 3 个源要来回点 3 次，每次都会触发重载，界面卡顿；
+  /// ② 中途误点无法取消，只能再点回来；
+  /// ③ 下拉菜单在手机上偏窄、勾选状态不明显。
+  /// 现在改为**底部弹窗 + 勾选 + 确定/取消**：弹窗内随便勾，只有按「确定」
+  /// 才写回并重载一次，中途可按「取消」或点遮罩放弃。
   Widget _sourceMenu() {
-    final groups = _sourceGroups;
     final enabled = widget.store.sources.isNotEmpty;
-    // 当前选中的 group id 集合：多选时是 _multiSources 对应的分组，
-    // 单选时是当前源所在分组。
-    final selected = <String>{
-      if (_multiSources.isNotEmpty)
-        for (final site in widget.store.sources)
-          if (_multiSources.contains(site.id)) site.groupId,
-      if (_multiSources.isEmpty) _source.groupId,
-    };
-    return PopupMenuButton<String>(
+    return InkWell(
       key: const ValueKey('source-switch'),
-      tooltip: '选择站源（可多选）',
-      enabled: enabled,
-      onSelected: (value) {
-        if (value == _multiMenuClear) {
-          if (_multiSources.isNotEmpty) {
-            unawaited(_applyMultiSources(const []));
-          } else {
-            _changeSource(SourceSite.byId(_source.id));
-          }
-          return;
-        }
-        final group = groups.where((group) => group.id == value).firstOrNull;
-        if (group == null) return;
-        // 多选：基于当前集合做增删。
-        final current = _multiSources.isNotEmpty
-            ? <String>{..._multiSources}
-            : <String>{
-                for (final site in widget.store.sources)
-                  if (site.groupId == _source.groupId) site.id,
-              };
-        final ids = group.sources.map((site) => site.id).toSet();
-        if (current.containsAll(ids) && ids.isNotEmpty) {
-          current.removeAll(ids);
-        } else {
-          current.addAll(ids);
-        }
-        unawaited(
-          _applyMultiSources(
-            widget.store.sources
-                .where((site) => current.contains(site.id))
-                .map((site) => site.id)
-                .toList(),
-          ),
-        );
-      },
-      itemBuilder: (_) => [
-        for (final group in groups)
-          PopupMenuItem(
-            value: group.id,
-            child: Row(
-              children: [
-                // 多选勾选框：勾中表示该源参与聚合。
-                SizedBox(
-                  width: 28,
-                  child: Icon(
-                    selected.contains(group.id)
-                        ? Icons.check_box_rounded
-                        : Icons.check_box_outline_blank_rounded,
-                    size: 20,
-                    color: selected.contains(group.id)
-                        ? const Color(0xFFFF765F)
-                        : null,
-                  ),
-                ),
-                Expanded(child: Text(group.name)),
-              ],
-            ),
-          ),
-        if (_multiSources.isNotEmpty) ...[
-          const PopupMenuDivider(),
-          const PopupMenuItem<String>(
-            value: _multiMenuClear,
-            child: Row(
-              children: [
-                SizedBox(width: 28, child: Icon(Icons.close_rounded, size: 20)),
-                Expanded(child: Text('恢复单选')),
-              ],
-            ),
-          ),
-        ],
-      ],
+      borderRadius: BorderRadius.circular(8),
+      onTap: enabled ? _openSourceSheet : null,
       child: SizedBox(
         height: 48,
         child: Row(
@@ -378,8 +313,42 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
     );
   }
 
-  /// 「恢复单选」菜单项的哨兵值（不会与真实 group id 冲突）。
-  static const _multiMenuClear = '__single__';
+  /// 打开站源选择弹窗（0.6.11 新增）。
+  ///
+  /// 弹窗内维护**临时**选中集合，只有按「确定」才调用 [_applyMultiSources]。
+  Future<void> _openSourceSheet() async {
+    final groups = _sourceGroups;
+    if (groups.isEmpty) return;
+    // 当前已选中的 group id 集合：多选时取 `_multiSources`，单选时取当前源。
+    final initial = <String>{
+      if (_multiSources.isNotEmpty)
+        for (final site in widget.store.sources)
+          if (_multiSources.contains(site.id)) site.groupId,
+      if (_multiSources.isEmpty) _source.groupId,
+    };
+    final result = await showModalBottomSheet<Set<String>>(
+      context: context,
+      backgroundColor: Colors.transparent,
+      isScrollControlled: true,
+      builder: (sheetContext) => _SourcePickerSheet(
+        groups: groups,
+        initial: initial,
+        allSources: widget.store.sources,
+      ),
+    );
+    if (result == null || !mounted) return;
+    // 「确定」：把勾选的分组展开成站点 id 列表后应用。
+    final ids = <String>[
+      for (final site in widget.store.sources)
+        if (result.contains(site.groupId)) site.id,
+    ];
+    if (ids.isEmpty) {
+      // 一个都没勾 = 恢复单选当前源（不允许"什么都不选"的空状态）。
+      _changeSource(SourceSite.byId(_source.id));
+      return;
+    }
+    await _applyMultiSources(ids);
+  }
 
   /// 切换到「多选站源」状态：同时聚合勾选的若干个源。
   ///
@@ -922,23 +891,25 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
     final following = widget.store.following(drama.id);
     final canSelect =
         widget.store.canDownload && widget.repository.supportsDownloads;
-    return DramaTile(
-      key: ValueKey(drama.id),
-      drama: drama,
-      repository: widget.repository,
-      focusNode: focusNode,
-      onFocus: onFocus,
-      onTap: () => _selectionMode ? _selectDrama(drama) : _openDrama(drama),
-      onLongPress: canSelect ? () => _selectDrama(drama) : null,
-      onMore: () => _dramaActions(drama),
-      actions: DramaActionButton(
+    return RepaintBoundary(
+      child: DramaTile(
+        key: ValueKey(drama.id),
         drama: drama,
-        onPressed: () => _dramaActions(drama),
+        repository: widget.repository,
+        focusNode: focusNode,
+        onFocus: onFocus,
+        onTap: () => _selectionMode ? _selectDrama(drama) : _openDrama(drama),
+        onLongPress: canSelect ? () => _selectDrama(drama) : null,
+        onMore: () => _dramaActions(drama),
+        actions: DramaActionButton(
+          drama: drama,
+          onPressed: () => _dramaActions(drama),
+        ),
+        selected: _selectionMode ? _selectedDramas.containsKey(drama.id) : null,
+        badge: following == null
+            ? null
+            : '${following.status.label}${following.newEpisodes > 0 ? ' · 更新 ${following.newEpisodes} 集' : ''}',
       ),
-      selected: _selectionMode ? _selectedDramas.containsKey(drama.id) : null,
-      badge: following == null
-          ? null
-          : '${following.status.label}${following.newEpisodes > 0 ? ' · 更新 ${following.newEpisodes} 集' : ''}',
     );
   }
 
@@ -1115,32 +1086,6 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
                         children: [
                           const Text('独立运行，打开即可浏览和播放。观看记录与追剧收藏保存在当前设备。'),
                           const SizedBox(height: 12),
-                          // 作者信息（0.2.30 新增，用户要求）：
-                          // 名字蓝色可点击，跳转各自 GitHub 页面，并标明身份。
-                          const AboutCredit(
-                            name: 'Topkill',
-                            role: '开源项目 guoapp3 原作者',
-                            url: 'https://github.com/Topkill/guoapp3',
-                          ),
-                          const AboutCredit(
-                            name: '软萌小正太',
-                            role: '本应用改版与维护',
-                            url: 'https://github.com/kuoluoss/zhenguojian',
-                          ),
-                          const SizedBox(height: 8),
-                          Align(
-                            alignment: Alignment.centerLeft,
-                            child: TextButton.icon(
-                              key: const ValueKey('about-check-update'),
-                              onPressed: () =>
-                                  AppUpdater.checkManually(context),
-                              icon: const Icon(
-                                Icons.system_update_rounded,
-                                size: 18,
-                              ),
-                              label: const Text('检测新版本'),
-                            ),
-                          ),
                         ],
                       );
                     }
@@ -1531,7 +1476,27 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
             child: GestureDetector(
               onHorizontalDragEnd: television ? null : _swipeCategory,
               child: _loading && _items.isEmpty
-                  ? const DramaGridSkeleton()
+                  ? Column(
+                      children: [
+                        const Expanded(child: DramaGridSkeleton()),
+                        // 加载引导：多源全选时首批数据要等最慢的站源，
+                        // 给用户明确提示"可以先去别的标签"，避免干等的焦虑。
+                        Padding(
+                          padding: const EdgeInsets.only(bottom: 10),
+                          child: Text(
+                            _group.sources.length > 1
+                                ? '正在从 ${_group.sources.length} 个站源加载，可先看其他标签'
+                                : '正在加载，可先看其他标签',
+                            style: TextStyle(
+                              color: Theme.of(
+                                context,
+                              ).colorScheme.onSurfaceVariant,
+                              fontSize: 12,
+                            ),
+                          ),
+                        ),
+                      ],
+                    )
                   : _items.isEmpty && _error != null
                   ? StatusPanel(
                       title: '暂时无法加载',
@@ -1824,6 +1789,149 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
       padding: const EdgeInsets.fromLTRB(18, 2, 18, 18),
       itemBuilder: (_, index, node, onFocus) =>
           _catalogTile(items[index], focusNode: node, onFocus: onFocus),
+    );
+  }
+}
+
+/// 站源选择弹窗（0.6.11 新增）。
+///
+/// 用户反馈原下拉菜单"点一下就修改、多选要多点很多次"，
+/// 故改为弹窗内自由勾选、**按「确定」才生效**。
+///
+/// 内部只维护 `Set<String>`（分组 id），按「确定」时
+/// `Navigator.pop(selected)` 把结果交回调用方，由调用方展开成站点 id。
+class _SourcePickerSheet extends StatefulWidget {
+  const _SourcePickerSheet({
+    required this.groups,
+    required this.initial,
+    required this.allSources,
+  });
+
+  final List<SourceGroup> groups;
+  final Set<String> initial;
+  final List<SourceSite> allSources;
+
+  @override
+  State<_SourcePickerSheet> createState() => _SourcePickerSheetState();
+}
+
+class _SourcePickerSheetState extends State<_SourcePickerSheet> {
+  late final Set<String> _selected = {...widget.initial};
+
+  void _toggle(String groupId) {
+    setState(() {
+      if (!_selected.remove(groupId)) _selected.add(groupId);
+    });
+  }
+
+  void _selectAll() {
+    setState(() {
+      _selected
+        ..clear()
+        ..addAll(widget.groups.map((group) => group.id));
+    });
+  }
+
+  void _clearAll() => setState(_selected.clear);
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final accent = theme.colorScheme.primary;
+    return SafeArea(
+      top: false,
+      child: Container(
+        margin: const EdgeInsets.fromLTRB(12, 0, 12, 12),
+        padding: const EdgeInsets.fromLTRB(16, 14, 16, 12),
+        decoration: BoxDecoration(
+          color: theme.colorScheme.surface,
+          borderRadius: BorderRadius.circular(18),
+        ),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            Row(
+              children: [
+                Expanded(
+                  child: Text(
+                    '选择站源',
+                    style: theme.textTheme.titleMedium?.copyWith(
+                      fontWeight: FontWeight.w800,
+                    ),
+                  ),
+                ),
+                TextButton(
+                  key: const ValueKey('source-sheet-all'),
+                  onPressed: _selectAll,
+                  child: const Text('全选'),
+                ),
+                TextButton(
+                  key: const ValueKey('source-sheet-clear'),
+                  onPressed: _clearAll,
+                  child: const Text('清空'),
+                ),
+              ],
+            ),
+            const SizedBox(height: 4),
+            ConstrainedBox(
+              constraints: BoxConstraints(
+                maxHeight: MediaQuery.sizeOf(context).height * 0.45,
+              ),
+              child: SingleChildScrollView(
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    for (final group in widget.groups)
+                      CheckboxListTile(
+                        key: ValueKey('source-sheet-${group.id}'),
+                        value: _selected.contains(group.id),
+                        onChanged: (_) => _toggle(group.id),
+                        controlAffinity: ListTileControlAffinity.leading,
+                        activeColor: accent,
+                        dense: true,
+                        title: Text(
+                          group.name,
+                          style: const TextStyle(fontWeight: FontWeight.w600),
+                        ),
+                        // 分组下有多个站点时，把站点名列出来，
+                        // 避免用户以为"黄果"只是一个源（实际含视频/AI/旧版）。
+                        subtitle: group.sources.length > 1
+                            ? Text(
+                                group.sources
+                                    .map((site) => site.entryName)
+                                    .join(' · '),
+                                style: theme.textTheme.bodySmall,
+                              )
+                            : null,
+                      ),
+                  ],
+                ),
+              ),
+            ),
+            const SizedBox(height: 8),
+            Row(
+              children: [
+                Expanded(
+                  child: OutlinedButton(
+                    key: const ValueKey('source-sheet-cancel'),
+                    onPressed: () => Navigator.of(context).pop(),
+                    child: const Text('取消'),
+                  ),
+                ),
+                const SizedBox(width: 12),
+                Expanded(
+                  child: FilledButton(
+                    key: const ValueKey('source-sheet-confirm'),
+                    onPressed: () => Navigator.of(context).pop({..._selected}),
+                    child: const Text('确定'),
+                  ),
+                ),
+              ],
+            ),
+          ],
+        ),
+      ),
     );
   }
 }

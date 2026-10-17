@@ -10,9 +10,7 @@ import 'package:window_manager/window_manager.dart';
 
 import 'core_bridge.dart';
 import 'app_layout.dart';
-import 'app_splash.dart';
 import 'app_theme.dart';
-import 'app_updater.dart';
 import 'home_screen.dart';
 import 'local_store.dart';
 import 'profiles_screen.dart';
@@ -23,6 +21,10 @@ import 'vertical_feed_screen.dart';
 
 Future<void> main(List<String> arguments) async {
   WidgetsFlutterBinding.ensureInitialized();
+  // 性能优化：收敛图片缓存峰值。封面已按 440 宽下采样（单张位图约 1MiB），
+  // 默认 100MiB 在低端机上与视频解码缓冲叠加易推高内存水位、诱发系统查杀；
+  // 64MiB 可缓存约 6 屏封面，平衡滚动流畅度与内存峰值。
+  PaintingBinding.instance.imageCache.maximumSizeBytes = 64 << 20;
   if (Platform.isAndroid) {
     await SystemChrome.setEnabledSystemUIMode(SystemUiMode.edgeToEdge);
     SystemChrome.setSystemUIOverlayStyle(AppTheme.systemBars(Brightness.dark));
@@ -100,8 +102,10 @@ class _AppBootstrapState extends State<AppBootstrap>
       error = null;
     });
     try {
-      final preferences = await SharedPreferences.getInstance();
-      device = await AppDevice.detect();
+      final prefsFuture = SharedPreferences.getInstance();
+      final deviceFuture = AppDevice.detect();
+      final preferences = await prefsFuture;
+      device = await deviceFuture;
       await repository.initialize();
       if (mounted) {
         setState(() {
@@ -163,13 +167,7 @@ class _AppBootstrapState extends State<AppBootstrap>
             );
           };
         });
-        // 界面就绪后检查更新（仅 Android；失败静默跳过，不阻塞启动）。
-        WidgetsBinding.instance.addPostFrameCallback((_) {
-          final target = navigator.currentContext;
-          if (target != null) {
-            unawaited(AppUpdater.checkOnStartup(target));
-          }
-        });
+        // 启动初始化完成，无应用内更新模块（共存版已移除）。
       }
     } catch (failure) {
       if (mounted) {
@@ -317,12 +315,11 @@ class DuanjuApp extends StatelessWidget {
           ),
   );
 
-  /// 用开屏页盖住主界面，等首页有视频可播后再淡出。
+  /// 启动直接进入主框架（含导航栏），不再用开屏页遮盖。
   ///
-  /// 测试或未注入就绪信号时直接返回主界面（不显示开屏页）。
-  Widget _withSplash(Widget child) {
-    final ready = feedReady;
-    if (ready == null) return child;
-    return AppSplash(ready: ready, child: child);
-  }
+  /// 旧实现：AppSplash 盖住主界面，等首页拿到第一批可播视频（或 3 秒超时）才淡出。
+  /// 多源全选时首页加载慢，用户被全屏深色页卡住、无法切导航。
+  /// 现改为进入 app 即见完整框架（首页/发现/追剧/最近观看/下载均立即可点），
+  /// 首页内容在框架内以骨架占位加载；追剧/最近观看/下载是本地数据，可秒开逃出等待。
+  Widget _withSplash(Widget child) => child;
 }

@@ -84,6 +84,9 @@ class CatalogBrowser {
 
   Future<void> _each<T>(List<T> entries, Future<void> Function(T) visit) async {
     var index = 0;
+    // 流畅优化：worker 并发 2→6，与原生核心目录并发(6)对齐。
+    // 多源全选时各源的缓存读取/目录请求不再在 Dart 层排队成假瓶颈；
+    // 原生层仍会做每源单并发 + 全局上限的节流，站源压力不受影响。
     Future<void> worker() async {
       while (index < entries.length) {
         final entry = entries[index++];
@@ -91,7 +94,7 @@ class CatalogBrowser {
       }
     }
 
-    await Future.wait(List.generate(min(2, entries.length), (_) => worker()));
+    await Future.wait(List.generate(min(6, entries.length), (_) => worker()));
   }
 
   Future<String?> loadCategories(
