@@ -95,6 +95,86 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
   /// 双击「首页」标签时自增，通知竖滑流重新随机。
   final _feedRefresh = ValueNotifier<int>(0);
 
+  /// 首页剧类筛选（0.7.2，`XQ-0106`）：all / real / comic。
+  ///
+  /// 用户明确限定：**只有单独选中红果时可用**；
+  /// 其它源或多源（即使包含红果）都不支持——因为这些站源没有这套分类。
+  String _feedGenre = 'all';
+
+  /// 剧类选项（值, 标题, 说明）。
+  static const _feedGenreOptions = <(String, String, String)>[
+    ('all', '全部', '真人剧 + 漫剧 + AI 剧 混合随机'),
+    ('real', '真人剧', '只刷红果真人剧'),
+    ('comic', '漫剧', '漫剧 + AI 剧'),
+  ];
+
+  /// 当前是否允许使用剧类筛选：**恰好只有一个红果源**。
+  bool get _feedGenreEnabled {
+    final sources = _group.sources;
+    return sources.length == 1 && sources.first.id == 'hongguo';
+  }
+
+  String get _feedGenreLabel => switch (_feedGenre) {
+    'real' => '真人剧',
+    'comic' => '漫剧',
+    _ => '全部',
+  };
+
+  /// 传给竖滑流的红果分类；null = 默认三类混合。
+  List<String>? get _feedHongguoGenres {
+    if (!_feedGenreEnabled) return null;
+    return switch (_feedGenre) {
+      'real' => const ['short_play'],
+      'comic' => const ['comic_series', 'ai_series'],
+      _ => null,
+    };
+  }
+
+  /// 打开剧类筛选弹窗（0.7.2，`XQ-0106`）。
+  Future<void> _openFeedGenreSheet() async {
+    if (!widget.store.sources.any((site) => site.id == 'hongguo')) {
+      return;
+    }
+    if (!_feedGenreEnabled) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('剧类筛选只在「仅红果」时可用')),
+      );
+      return;
+    }
+    final picked = await showModalBottomSheet<String>(
+      context: context,
+      builder: (sheetContext) => SafeArea(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            const Padding(
+              padding: EdgeInsets.fromLTRB(16, 16, 16, 8),
+              child: Text(
+                '剧类（仅红果）',
+                style: TextStyle(fontWeight: FontWeight.w800, fontSize: 16),
+              ),
+            ),
+            for (final option in _feedGenreOptions)
+              ListTile(
+                key: ValueKey('feed-genre-${option.$1}'),
+                leading: Icon(
+                  option.$1 == _feedGenre
+                      ? Icons.radio_button_checked_rounded
+                      : Icons.radio_button_off_rounded,
+                ),
+                title: Text(option.$2),
+                subtitle: Text(option.$3),
+                onTap: () => Navigator.of(sheetContext).pop(option.$1),
+              ),
+            const SizedBox(height: 8),
+          ],
+        ),
+      ),
+    );
+    if (picked == null || !mounted || picked == _feedGenre) return;
+    setState(() => _feedGenre = picked);
+  }
+
   List<SourceGroup> get _sourceGroups {
     final groups = SourceGroup.fromSources(widget.store.sources);
     return groups;
@@ -574,7 +654,8 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
       onCatalogChanged: _catalogUpdated,
     )..addListener(_updateChanged);
     _updater.startWatching();
-    // 剧库自适应自动更新：默认 30 分钟，连续无新剧后降级为 6 小时。
+    // 剧库自适应自动更新：打开 App 后延迟 2 分钟，默认每 2 小时一轮，
+    // 连续无新剧后降级为 6 小时；设置里可完全关闭。
     _autoUpdater = CatalogAutoUpdater(widget.repository, widget.store)
       ..addListener(_autoUpdateChanged)
       ..start();
@@ -983,6 +1064,19 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
                   child: const Text('取消'),
                 ),
               ] else ...[
+                // 0.7.2（XQ-0106）：首页剧类筛选入口。仅"单独红果"时可用。
+                if (_tab == _feedIndex)
+                  IconButton(
+                    key: const ValueKey('feed-genre'),
+                    tooltip: _feedGenreEnabled
+                        ? '剧类 · $_feedGenreLabel'
+                        : '剧类筛选仅红果单独选择时可用',
+                    onPressed: _openFeedGenreSheet,
+                    color: _feedGenreEnabled && _feedGenre != 'all'
+                        ? Theme.of(context).colorScheme.primary
+                        : null,
+                    icon: const Icon(Icons.theater_comedy_outlined),
+                  ),
                 if (_tab == _followIndex)
                   IconButton(
                     key: const ValueKey('follow-lan-sync'),
@@ -1224,6 +1318,7 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
                         store: widget.store,
                         embedded: true,
                         sources: _group.sources,
+                        hongguoGenres: _feedHongguoGenres,
                         playerFactory: widget.feedPlayerFactory,
                         refreshSignal: _feedRefresh,
                         onReady: widget.onFeedReady,
