@@ -2,8 +2,11 @@ package com.duanju.duanju_app
 
 import io.flutter.embedding.android.FlutterActivity
 import android.app.UiModeManager
+import android.media.AudioManager
 import android.os.Build
 import android.os.Bundle
+import android.provider.Settings
+import android.view.WindowManager
 import android.content.Context
 import android.content.pm.PackageManager
 import android.content.res.Configuration
@@ -44,18 +47,25 @@ class MainActivity : FlutterActivity() {
                         "pac" to (proxy != null && proxy.pacFileUrl != Uri.EMPTY)))
                 } else if (call.method == "networkType") {
                     result.success(networkType())
+                } else if (call.method == "systemVolume") {
+                    result.success(systemVolume())
+                } else if (call.method == "setSystemVolume") {
+                    val index = call.argument<Int>("index") ?: -1
+                    result.success(setSystemVolume(index))
+                } else if (call.method == "screenBrightness") {
+                    result.success(screenBrightness())
+                } else if (call.method == "setScreenBrightness") {
+                    val value = call.argument<Double>("value") ?: -1.0
+                    result.success(setScreenBrightness(value))
+                } else if (call.method == "resetScreenBrightness") {
+                    result.success(resetScreenBrightness())
                 } else {
                     result.notImplemented()
                 }
             }
     }
 
-    /**
-     * 当前网络的粗略类型（0.7.3）。
-     *
-     * 只用于"移动网络下是否自动播放"：Wi-Fi/有线返回 wifi，蜂窝返回 mobile，
-     * 无法判断（含 VPN、无网络）返回 unknown，由 Dart 侧按"允许自动播放"处理。
-     */
+    /** 当前网络的粗略类型（0.7.3）。 */
     private fun networkType(): String {
         return try {
             val manager = getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
@@ -69,6 +79,74 @@ class MainActivity : FlutterActivity() {
             }
         } catch (e: Exception) {
             "unknown"
+        }
+    }
+
+    /** 系统媒体音量（0.7.5）。 */
+    private fun systemVolume(): Map<String, Int> {
+        return try {
+            val audio = getSystemService(Context.AUDIO_SERVICE) as AudioManager
+            val max = audio.getStreamMaxVolume(AudioManager.STREAM_MUSIC).coerceAtLeast(1)
+            val current = audio.getStreamVolume(AudioManager.STREAM_MUSIC)
+            mapOf("current" to current, "max" to max)
+        } catch (e: Exception) {
+            mapOf("current" to 0, "max" to 1)
+        }
+    }
+
+    /** 设置系统媒体音量档位（0.7.5）。 */
+    private fun setSystemVolume(index: Int): Boolean {
+        return try {
+            val audio = getSystemService(Context.AUDIO_SERVICE) as AudioManager
+            val max = audio.getStreamMaxVolume(AudioManager.STREAM_MUSIC)
+            val target = index.coerceIn(0, max)
+            audio.setStreamVolume(AudioManager.STREAM_MUSIC, target, 0)
+            true
+        } catch (e: Exception) {
+            false
+        }
+    }
+
+    /** 读取系统当前亮度比例（0~1，0.7.8）。 */
+    private fun screenBrightness(): Double {
+        return try {
+            val value = Settings.System.getInt(
+                contentResolver,
+                Settings.System.SCREEN_BRIGHTNESS,
+            )
+            (value / 255.0).coerceIn(0.0, 1.0)
+        } catch (e: Exception) {
+            0.5
+        }
+    }
+
+    /** 设置本 App 窗口亮度（0~1，0.7.8）。 */
+    private fun setScreenBrightness(ratio: Double): Boolean {
+        return try {
+            val value = ratio.coerceIn(0.0, 1.0).toFloat()
+            runOnUiThread {
+                val attrs = window.attributes
+                attrs.screenBrightness = value
+                window.attributes = attrs
+            }
+            true
+        } catch (e: Exception) {
+            false
+        }
+    }
+
+    /** 恢复窗口亮度为"跟随系统"（0.7.8）。 */
+    private fun resetScreenBrightness(): Boolean {
+        return try {
+            runOnUiThread {
+                val attrs = window.attributes
+                attrs.screenBrightness =
+                    WindowManager.LayoutParams.BRIGHTNESS_OVERRIDE_NONE
+                window.attributes = attrs
+            }
+            true
+        } catch (e: Exception) {
+            false
         }
     }
 }
