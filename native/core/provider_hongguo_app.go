@@ -125,6 +125,34 @@ func hongguoCatalogHasMore(state *hongguoCatalogState) bool {
 	return false
 }
 
+// 红果 App 接口全局节流（0.7.16）。
+//
+// 实测：连续突发请求（首页三组推荐并发）会被网关间歇性丢成「200 + 空体」。
+// 串行化并保持最小间隔后，同样三组请求全部正常返回。
+const hongguoAppMinInterval = 600 * time.Millisecond
+
+var (
+	hongguoAppThrottleMu  sync.Mutex
+	hongguoAppLastRequest time.Time
+)
+
+func hongguoAppThrottle(ctx context.Context) error {
+	hongguoAppThrottleMu.Lock()
+	wait := hongguoAppMinInterval - time.Since(hongguoAppLastRequest)
+	hongguoAppThrottleMu.Unlock()
+	if wait > 0 {
+		select {
+		case <-time.After(wait):
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	}
+	hongguoAppThrottleMu.Lock()
+	hongguoAppLastRequest = time.Now()
+	hongguoAppThrottleMu.Unlock()
+	return nil
+}
+
 func (downloader *Downloader) hongguoAppRequest(ctx context.Context, method, path string, extra url.Values, payload any) (map[string]any, error) {
 	client := downloader.hongguoClient()
 	client.mu.Lock()
@@ -136,6 +164,8 @@ func (downloader *Downloader) hongguoAppRequest(ctx context.Context, method, pat
 		"device_platform": {"android"}, "os": {"android"}, "ssmix": {"a"}, "device_type": {"25053RT47C"},
 		"device_brand": {"Redmi"}, "language": {"zh"}, "os_api": {"36"}, "os_version": {"16"},
 		"resolution": {"1280*2772"}, "dpi": {"520"}, "ac": {"wifi"}, "device_id": {deviceID}, "iid": {installID},
+		// 0.7.16：网关签名校验会看设备画像字段，缺这两个时接口仍返回空体。
+		"host_abi": {"arm64-v8a"}, "dragon_device_type": {"phone"},
 	}
 	for key, values := range extra {
 		query[key] = append([]string(nil), values...)
@@ -148,18 +178,23 @@ func (downloader *Downloader) hongguoAppRequest(ctx context.Context, method, pat
 			return nil, err
 		}
 	}
+	// 0.7.16：网关会间歇性返回空体，单次失败不代表源不可用，
+	// 因此这里至少重试 4 次（上限 5），间隔 700ms 递增。
 	attempts := downloader.cfg.Retries
-	if attempts < 1 {
-		attempts = 1
+	if attempts < 4 {
+		attempts = 4
 	}
-	if attempts > 3 {
-		attempts = 3
+	if attempts > 5 {
+		attempts = 5
 	}
 	var lastErr error
 	for attempt := 0; attempt < attempts; attempt++ {
+		if err := hongguoAppThrottle(ctx); err != nil {
+			return nil, err
+		}
 		if attempt > 0 {
 			select {
-			case <-time.After(time.Duration(attempt) * time.Second):
+			case <-time.After(time.Duration(attempt) * 700 * time.Millisecond):
 			case <-ctx.Done():
 				return nil, ctx.Err()
 			}
@@ -169,9 +204,15 @@ func (downloader *Downloader) hongguoAppRequest(ctx context.Context, method, pat
 			return nil, err
 		}
 		request.Header.Set("User-Agent", hongguoAppUserAgent)
-		request.Header.Set("Accept", "application/json")
+		request.Header.Set("Accept", "application/json; charset=utf-8,application/x-protobuf")
 		request.Header.Set("X-XS-From-Web", "0")
 		request.Header.Set("Sdk-Version", "2")
+		// 0.7.16：红果 App 网关现在校验完整客户端特征，缺这几项时
+		// 部分接口（尤其播放取流）会返回 HTTP 200 + 空体。
+		request.Header.Set("X-Tt-Request-Tag", "t=0;n=0")
+		request.Header.Set("Passport-Sdk-Version", "50561")
+		request.Header.Set("X-Vc-Bdturing-Sdk-Version", "3.7.2.cn")
+		request.Header.Set("X-Tt-Dt", "")
 		if payload != nil {
 			request.Header.Set("Content-Type", "application/json; charset=utf-8")
 		}
@@ -203,13 +244,17 @@ func (downloader *Downloader) hongguoAppRequest(ctx context.Context, method, pat
 			continue
 		}
 		if len(content) == 0 || len(content) > providerMaxBodyBytes {
-			return nil, errors.New("红果 App 接口未返回有效数据")
+			// 0.7.16：空体是红果网关的间歇性风控表现（突发请求时出现），
+			// 属于可重试失败；原先直接返回错误，导致首页三组推荐并发时整片失败。
+			lastErr = errors.New("红果 App 接口未返回有效数据")
+			continue
 		}
 		var result map[string]any
 		decoder := json.NewDecoder(bytes.NewReader(content))
 		decoder.UseNumber()
 		if err := decoder.Decode(&result); err != nil || result == nil {
-			return nil, errors.New("红果 App 接口返回格式异常")
+			lastErr = errors.New("红果 App 接口返回格式异常")
+			continue
 		}
 		code := firstNonEmpty(mapString(result, "code", "Code", "status_code"), mapString(nestedMap(result, "BaseResp"), "StatusCode"))
 		if code != "" && code != "0" {

@@ -57,10 +57,13 @@ class _AppSplashState extends State<AppSplash> {
       _minimumElapsed = true;
       _maybeDismiss();
     });
+    // 0.7.16：超时**无条件**放行。
+    // 原先这里只置 `_minimumElapsed`，仍要求 `ready` 为真才淡出，
+    // 于是只要首屏一条剧都拉不回来（站源故障 / 无网络 / 空列表），
+    // 开屏页就永久盖住首页，用户看不到也点不到首页自带的错误与重试按钮。
     _timeoutTimer = Timer(widget.timeout, () {
       if (!mounted) return;
-      _minimumElapsed = true;
-      _maybeDismiss();
+      _dismiss();
     });
     widget.ready.addListener(_maybeDismiss);
     _maybeDismiss();
@@ -83,10 +86,15 @@ class _AppSplashState extends State<AppSplash> {
     super.dispose();
   }
 
+  void _dismiss() {
+    if (!mounted || _dismissed) return;
+    setState(() => _dismissed = true);
+  }
+
   void _maybeDismiss() {
     if (!mounted || _dismissed) return;
     if (!_minimumElapsed || !widget.ready.value) return;
-    setState(() => _dismissed = true);
+    _dismiss();
   }
 
   @override
