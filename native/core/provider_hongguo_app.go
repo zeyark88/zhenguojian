@@ -47,6 +47,8 @@ type hongguoAppClient struct {
 	searchPending  map[string]*hongguoSearchCall
 	suggestions    map[string]hongguoSuggestionEntry
 	suggestPending map[string]*hongguoSuggestionCall
+	danmaku        map[string]hongguoDanmakuCacheEntry
+	danmakuPending map[string]*hongguoDanmakuCall
 }
 
 func (downloader *Downloader) hongguoClient() *hongguoAppClient {
@@ -125,10 +127,6 @@ func hongguoCatalogHasMore(state *hongguoCatalogState) bool {
 	return false
 }
 
-// 红果 App 接口全局节流（0.7.16）。
-//
-// 实测：连续突发请求（首页三组推荐并发）会被网关间歇性丢成「200 + 空体」。
-// 串行化并保持最小间隔后，同样三组请求全部正常返回。
 const hongguoAppMinInterval = 600 * time.Millisecond
 
 var (
@@ -164,7 +162,6 @@ func (downloader *Downloader) hongguoAppRequest(ctx context.Context, method, pat
 		"device_platform": {"android"}, "os": {"android"}, "ssmix": {"a"}, "device_type": {"25053RT47C"},
 		"device_brand": {"Redmi"}, "language": {"zh"}, "os_api": {"36"}, "os_version": {"16"},
 		"resolution": {"1280*2772"}, "dpi": {"520"}, "ac": {"wifi"}, "device_id": {deviceID}, "iid": {installID},
-		// 0.7.16：网关签名校验会看设备画像字段，缺这两个时接口仍返回空体。
 		"host_abi": {"arm64-v8a"}, "dragon_device_type": {"phone"},
 	}
 	for key, values := range extra {
@@ -178,8 +175,6 @@ func (downloader *Downloader) hongguoAppRequest(ctx context.Context, method, pat
 			return nil, err
 		}
 	}
-	// 0.7.16：网关会间歇性返回空体，单次失败不代表源不可用，
-	// 因此这里至少重试 4 次（上限 5），间隔 700ms 递增。
 	attempts := downloader.cfg.Retries
 	if attempts < 4 {
 		attempts = 4
@@ -207,20 +202,33 @@ func (downloader *Downloader) hongguoAppRequest(ctx context.Context, method, pat
 		request.Header.Set("Accept", "application/json; charset=utf-8,application/x-protobuf")
 		request.Header.Set("X-XS-From-Web", "0")
 		request.Header.Set("Sdk-Version", "2")
-		// 0.7.16：红果 App 网关现在校验完整客户端特征，缺这几项时
-		// 部分接口（尤其播放取流）会返回 HTTP 200 + 空体。
 		request.Header.Set("X-Tt-Request-Tag", "t=0;n=0")
 		request.Header.Set("Passport-Sdk-Version", "50561")
 		request.Header.Set("X-Vc-Bdturing-Sdk-Version", "3.7.2.cn")
 		request.Header.Set("X-Tt-Dt", "")
+		comment, _ := ctx.Value(hongguoCommentKey{}).(bool)
+		var commentNonce hongguoCommentNonce
+		if comment {
+			commentNonce, err = newHongguoCommentNonce()
+			if err != nil {
+				return nil, errors.New("无法准备红果文字请求")
+			}
+			request.Header.Set("Comment-Source", "601")
+			request.Header.Set("Server-Channel", "1000")
+		}
 		if payload != nil {
 			request.Header.Set("Content-Type", "application/json; charset=utf-8")
 		}
 		response, err := downloader.doPreparedCatalogRequest(request, 20*time.Second, func(prepared *http.Request) {
 			now := time.Now()
-			query.Set("_rticket", strconv.FormatInt(now.UnixMilli(), 10))
 			prepared.URL.RawQuery = query.Encode()
-			signHongguoRequest(prepared, body, now)
+			if comment {
+				query.Set("_rticket", strconv.FormatInt(now.UnixMilli(), 10))
+				prepared.URL.RawQuery = query.Encode()
+				signHongguoCommentRequest(prepared, commentNonce, now)
+			} else {
+				signHongguoRequest(prepared, body, now)
+			}
 		})
 		if err != nil {
 			lastErr = err
@@ -244,8 +252,6 @@ func (downloader *Downloader) hongguoAppRequest(ctx context.Context, method, pat
 			continue
 		}
 		if len(content) == 0 || len(content) > providerMaxBodyBytes {
-			// 0.7.16：空体是红果网关的间歇性风控表现（突发请求时出现），
-			// 属于可重试失败；原先直接返回错误，导致首页三组推荐并发时整片失败。
 			lastErr = errors.New("红果 App 接口未返回有效数据")
 			continue
 		}

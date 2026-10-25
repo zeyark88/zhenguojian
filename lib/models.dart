@@ -7,8 +7,13 @@ class SourceSite {
   final String id;
   final String name;
   final String description;
-  bool get onlineSearch => id == 'hongguo' || id == 'huangju';
-  bool get pagedSearch => id == 'huangju';
+  bool get onlineSearch => id == 'hongguo' || pagedSearch;
+  bool get pagedSearch =>
+      id == 'huangju' ||
+      id == 'yeguo' ||
+      id == 'sorani' ||
+      id == 'guipian' ||
+      id == 'hanxiaoquan';
   bool get searchSuggestions => id == 'hongguo';
   String get groupId => switch (id) {
     'huangguo-video' || 'huangguoai' || 'cloudfront' => 'huangguo',
@@ -23,18 +28,38 @@ class SourceSite {
   };
 
   static const hongguo = SourceSite('hongguo', '红果', '短剧 · 漫剧 · AI 剧');
-  static const knownValues = [
-    hongguo,
+  static const hanxiaoquan = SourceSite('hanxiaoquan', '韩小圈', '韩剧 · 韩国电影 · 综艺动漫');
+  static const guipian = SourceSite('guipian', '鬼片', '鬼片 · 电视剧 · 动漫');
+  static const sorani = SourceSite('sorani', '青空', '番剧 · 剧场动画 · 特摄');
+
+  /// 默认可见的站源：红果、韩小圈、鬼片网、青空次元。
+  static const primaryValues = [hongguo, hanxiaoquan, guipian, sorani];
+
+  /// 敏感站源：默认隐藏，输入解锁密码后才显示。
+  static const restrictedValues = [
     SourceSite('huangdou', '黄豆', '精选短剧'),
     SourceSite('huangju', '黄剧', '热门 · 最新 · 分类短剧'),
+    SourceSite('yeguo', '野果', '分类短剧 · 在线搜索'),
     SourceSite('huangguo-video', '黄果剧场', '视频剧集'),
     SourceSite('huangguoai', '黄果 AI', 'AI 短剧'),
     SourceSite('cloudfront', '黄果旧版', '旧 API 剧库'),
   ];
+  static const knownValues = [...primaryValues, ...restrictedValues];
+  static const allValues = [...primaryValues, ...restrictedValues];
   static const values = allSourcesEnabled ? knownValues : [hongguo];
   static bool isAvailable(String id) => values.any((site) => site.id == id);
+  static bool isKnown(String id) => allValues.any((site) => site.id == id);
+  static bool isPrimary(String id) => primaryValues.any((site) => site.id == id);
+  static bool isRestricted(String id) =>
+      restrictedValues.any((site) => site.id == id);
+
+  /// 运行时可见站源：未解锁时只保留 [primaryValues]。
+  static List<SourceSite> visibleValues({required bool unlocked}) => [
+    for (final site in values)
+      if (unlocked || isPrimary(site.id)) site,
+  ];
   static SourceSite byId(String id) =>
-      knownValues.firstWhere((site) => site.id == id, orElse: () => hongguo);
+      allValues.firstWhere((site) => site.id == id, orElse: () => hongguo);
 }
 
 class SourceGroup {
@@ -256,6 +281,7 @@ class PlaybackPlan {
     this.quality = 0,
     this.qualities = const [],
     this.session = '',
+    this.danmakuId = '',
     this.prefetchedBytes = 0,
     this.expiresAt = 0,
     this.routeIndex = 0,
@@ -268,6 +294,7 @@ class PlaybackPlan {
   final int quality;
   final List<int> qualities;
   final String session;
+  final String danmakuId;
   final int prefetchedBytes;
   final int expiresAt;
   final int routeIndex;
@@ -285,6 +312,7 @@ class PlaybackPlan {
     qualities: (json['qualities'] as List? ?? []).map(intValue).toSet().toList()
       ..sort((a, b) => b.compareTo(a)),
     session: json['session'] as String? ?? '',
+    danmakuId: json['danmakuId'] as String? ?? '',
     prefetchedBytes: intValue(json['prefetchedBytes']),
     expiresAt: intValue(json['expiresAt']),
     routeIndex: intValue(json['routeIndex']),

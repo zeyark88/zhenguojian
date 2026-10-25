@@ -28,6 +28,13 @@ type Config struct {
 	HongguoURL       string
 	HuangjuURL       string
 	HuangjuAPIURL    string
+	YeguoURL         string
+	YeguoAPIURL      string
+	DSDURL           string
+	SoraniURL        string
+	SoraniAPIURL     string
+	GuipianURL       string
+	HanxiaoquanURL   string
 	Token            string
 	AESKeyHex        string
 	InterfaceKey     string
@@ -52,6 +59,10 @@ type Downloader struct {
 	hongguo               *hongguoAppClient
 	huangjuOnce           sync.Once
 	huangju               *huangjuAPIClient
+	yeguoOnce             sync.Once
+	yeguo                 *yeguoAPIClient
+	soraniOnce            sync.Once
+	sorani                *soraniAPIClient
 	diagnostics           *diagnosticLog
 	apiMu                 sync.Mutex
 	apiBase               string
@@ -88,6 +99,9 @@ type nativeInput struct {
 	SystemProxy      nativeSystemProxy       `json:"systemProxy"`
 	Settings         nativeResourceSettings  `json:"settings"`
 	JobIDs           []string                `json:"jobIds"`
+	PlaybackSession  string                  `json:"playbackSession"`
+	StartMS          int64                   `json:"startMs"`
+	DurationMS       int64                   `json:"durationMs"`
 	Board            string                  `json:"board"`
 	Entries          []nativeDownloadEpisode `json:"entries"`
 	JobID            string                  `json:"jobId"`
@@ -121,6 +135,7 @@ type nativeCatalogResult struct {
 type nativePlan struct {
 	ExpiresAt       int64             `json:"expiresAt,omitempty"`
 	PrefetchedBytes int64             `json:"prefetchedBytes,omitempty"`
+	DanmakuID       string            `json:"danmakuId,omitempty"`
 	Local           bool              `json:"local"`
 	URL             string            `json:"url"`
 	Headers         map[string]string `json:"headers"`
@@ -349,12 +364,14 @@ func nativeDispatch(input nativeInput) (any, error) {
 	duration := 60 * time.Second
 	if input.Action == "moveDownloads" {
 		duration = 10 * time.Minute
+	} else if input.Action == "danmaku" {
+		duration = 10 * time.Second
 	} else if input.Action == "preload" {
 		duration = 15 * time.Second
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), duration)
 	defer cancel()
-	if input.Action == "preload" || input.Action == "prepareHandoff" || input.Session != "" && (input.Action == "catalog" || input.Action == "categories" || input.Action == "suggestions" || input.Action == "recommendations" || input.Action == "metadata") {
+	if input.Action == "danmaku" || input.Action == "preload" || input.Action == "prepareHandoff" || input.Session != "" && (input.Action == "catalog" || input.Action == "categories" || input.Action == "suggestions" || input.Action == "recommendations" || input.Action == "metadata") {
 		work, finish, err := engine.beginRead(ctx, input)
 		if err != nil {
 			return nil, err
@@ -377,6 +394,8 @@ func nativeDispatch(input nativeInput) (any, error) {
 		return engine.nativePreload(ctx, input)
 	case "prepareHandoff":
 		return engine.nativeResolve(ctx, input)
+	case "danmaku":
+		return engine.nativeDanmaku(ctx, input)
 	case "cancelRead":
 		engine.cancelRead(input)
 		return true, nil
@@ -520,6 +539,50 @@ func (engine *nativeEngine) nativeCatalog(ctx context.Context, input nativeInput
 		result.HasMore = more
 		return result, nil
 	}
+	if query != "" && source == sourceSorani {
+		items, more, err := d.fetchSoraniCatalogPage(ctx, page, "", query)
+		if err != nil {
+			return result, err
+		}
+		for _, drama := range items {
+			result.Items = append(result.Items, nativeNormalize(drama))
+		}
+		result.HasMore = more
+		return result, nil
+	}
+	if query != "" && source == sourceGuipian {
+		items, more, err := d.fetchGuipianCatalogPage(ctx, page, "", query)
+		if err != nil {
+			return result, err
+		}
+		for _, drama := range items {
+			result.Items = append(result.Items, nativeNormalize(drama))
+		}
+		result.HasMore = more
+		return result, nil
+	}
+	if query != "" && source == sourceHanxiaoquan {
+		items, more, err := d.fetchHanxiaoquanCatalogPage(ctx, page, "", query)
+		if err != nil {
+			return result, err
+		}
+		for _, drama := range items {
+			result.Items = append(result.Items, nativeNormalize(drama))
+		}
+		result.HasMore = more
+		return result, nil
+	}
+	if query != "" && source == sourceYeguo {
+		items, more, err := d.fetchYeguoCatalogPage(ctx, page, "", query)
+		if err != nil {
+			return result, err
+		}
+		for _, drama := range items {
+			result.Items = append(result.Items, nativeNormalize(drama))
+		}
+		result.HasMore = more
+		return result, nil
+	}
 	if query != "" {
 		engine.mu.Lock()
 		items := append([]nativeDrama{}, engine.catalogs[source]...)
@@ -588,6 +651,14 @@ func (engine *nativeEngine) nativeCatalog(ctx context.Context, input nativeInput
 		items, result.HasMore, err = d.fetchHuangguoAICatalogPage(ctx, page, category)
 	case sourceHuangju:
 		items, result.HasMore, err = d.fetchHuangjuCatalogPage(ctx, page, category, "")
+	case sourceYeguo:
+		items, result.HasMore, err = d.fetchYeguoCatalogPage(ctx, page, category, "")
+	case sourceSorani:
+		items, result.HasMore, err = d.fetchSoraniCatalogPage(ctx, page, category, "")
+	case sourceGuipian:
+		items, result.HasMore, err = d.fetchGuipianCatalogPage(ctx, page, category, "")
+	case sourceHanxiaoquan:
+		items, result.HasMore, err = d.fetchHanxiaoquanCatalogPage(ctx, page, category, "")
 	case sourceHuangguoVideo:
 		address := fmt.Sprintf("%s/videos?page=%d", d.providerBaseURL(source), page)
 		if category != "" {
@@ -641,6 +712,14 @@ func (engine *nativeEngine) nativeDetail(ctx context.Context, drama nativeDrama)
 		raw, chapters, err = engine.downloader.fetchLegacyDetail(ctx, sourceID)
 	case sourceHuangju:
 		raw, chapters, err = engine.downloader.fetchHuangjuDetail(ctx, sourceID)
+	case sourceYeguo:
+		raw, chapters, err = engine.downloader.fetchYeguoDetail(ctx, sourceID)
+	case sourceSorani:
+		raw, chapters, err = engine.downloader.fetchSoraniDetail(ctx, sourceID)
+	case sourceGuipian:
+		raw, chapters, err = engine.downloader.fetchGuipianDetail(ctx, sourceID)
+	case sourceHanxiaoquan:
+		raw, chapters, err = engine.downloader.fetchHanxiaoquanDetail(ctx, sourceID)
 	default:
 		title, chapters, err = engine.downloader.GetHuangguoChapters(ctx, source, sourceID)
 	}
@@ -702,5 +781,8 @@ func (engine *nativeEngine) nativeResolve(ctx context.Context, input nativeInput
 		return nativePlan{}, err
 	}
 	choice := nativePlaybackChoices(media, input.Quality)
+	if series, video, valid := hongguoPlaybackIDs(task); valid {
+		choice.danmakuSeries, choice.danmakuVideo = series, video
+	}
 	return engine.nativeOpenPlayback(ctx, choice)
 }

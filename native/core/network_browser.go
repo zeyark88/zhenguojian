@@ -15,6 +15,7 @@ import (
 )
 
 const huangguoBrowserProfile = "Chrome 150"
+const hongguoAppProfile = "OkHttp4 Android 13"
 
 type browserHTTPClient interface {
 	Do(*fhttp.Request) (*fhttp.Response, error)
@@ -29,7 +30,7 @@ type huangguoBrowserTransport struct {
 	record    func(diagnosticEvent)
 	mu        sync.Mutex
 	clients   map[string]browserHTTPClient
-	newClient func(string) (browserHTTPClient, error)
+	newClient func(string, string) (browserHTTPClient, error)
 }
 
 func newHuangguoBrowserTransport(base http.RoundTripper, downloader *Downloader) *huangguoBrowserTransport {
@@ -46,15 +47,38 @@ func newHuangguoBrowserTransport(base http.RoundTripper, downloader *Downloader)
 }
 
 func (transport *huangguoBrowserTransport) matches(request *http.Request) bool {
-	return (request.Method == http.MethodGet || request.Method == http.MethodHead) &&
-		(request.URL.Scheme == "http" || request.URL.Scheme == "https") &&
-		(strings.EqualFold(request.URL.Host, transport.host) || strings.EqualFold(request.URL.Hostname(), "huangguo.video"))
+	if request.URL.Scheme != "http" && request.URL.Scheme != "https" {
+		return false
+	}
+	if strings.EqualFold(request.URL.Host, transport.host) || strings.EqualFold(request.URL.Hostname(), "huangguo.video") {
+		return request.Method == http.MethodGet || request.Method == http.MethodHead
+	}
+	if isHongguoAppHost(request.URL.Hostname()) {
+		return request.Method == http.MethodGet || request.Method == http.MethodHead || request.Method == http.MethodPost
+	}
+	return false
 }
 
-func (transport *huangguoBrowserTransport) createClient(proxy string) (browserHTTPClient, error) {
+func isHongguoAppHost(hostname string) bool {
+	hostname = strings.ToLower(strings.TrimSpace(hostname))
+	return hostname == "fqnovel.com" || strings.HasSuffix(hostname, ".fqnovel.com")
+}
+
+func browserProfileName(request *http.Request) string {
+	if isHongguoAppHost(request.URL.Hostname()) {
+		return hongguoAppProfile
+	}
+	return huangguoBrowserProfile
+}
+
+func (transport *huangguoBrowserTransport) createClient(proxy, profileName string) (browserHTTPClient, error) {
+	profile := profiles.Chrome_150
+	if profileName == hongguoAppProfile {
+		profile = profiles.Okhttp4Android13
+	}
 	idleTimeout := 90 * time.Second
 	options := []tlsclient.HttpClientOption{
-		tlsclient.WithClientProfile(profiles.Chrome_150),
+		tlsclient.WithClientProfile(profile),
 		tlsclient.WithRandomTLSExtensionOrder(),
 		tlsclient.WithDisableHttp3(),
 		tlsclient.WithNotFollowRedirects(),
@@ -83,11 +107,12 @@ func (transport *huangguoBrowserTransport) client(request *http.Request) (browse
 	if proxy != nil {
 		proxyURL = proxy.String()
 	}
-	key := request.URL.Scheme + "://" + strings.ToLower(request.URL.Host) + "|" + proxyURL
+	profileName := browserProfileName(request)
+	key := request.URL.Scheme + "://" + strings.ToLower(request.URL.Host) + "|" + proxyURL + "|" + profileName
 	if client := transport.clients[key]; client != nil {
 		return client, nil
 	}
-	client, err := transport.newClient(proxyURL)
+	client, err := transport.newClient(proxyURL, profileName)
 	if err != nil {
 		return nil, err
 	}
@@ -139,6 +164,24 @@ func huangguoBrowserHeaders(request *http.Request) fhttp.Header {
 	return headers
 }
 
+var hongguoAppHeaderOrder = []string{
+	"user-agent", "accept", "x-xs-from-web", "sdk-version", "content-type",
+	"x-ss-stub", "x-khronos", "x-gorgon", "x-ss-req-ticket", "comment-source", "server-channel",
+}
+
+func passthroughAppHeaders(request *http.Request) fhttp.Header {
+	headers := fhttp.Header{}
+	for key, values := range request.Header {
+		lower := strings.ToLower(key)
+		if lower == "host" || lower == "connection" {
+			continue
+		}
+		headers[lower] = append([]string(nil), values...)
+	}
+	headers[fhttp.HeaderOrderKey] = hongguoAppHeaderOrder
+	return headers
+}
+
 func standardBrowserHeaders(headers fhttp.Header) http.Header {
 	result := make(http.Header, len(headers))
 	for key, values := range headers {
@@ -159,7 +202,11 @@ func (transport *huangguoBrowserTransport) RoundTrip(request *http.Request) (*ht
 	if err != nil {
 		return nil, err
 	}
-	upstream.Header = huangguoBrowserHeaders(request)
+	if isHongguoAppHost(request.URL.Hostname()) {
+		upstream.Header = passthroughAppHeaders(request)
+	} else {
+		upstream.Header = huangguoBrowserHeaders(request)
+	}
 	upstream.Host = request.Host
 	upstream.ContentLength = request.ContentLength
 	upstream.GetBody = request.GetBody
@@ -188,8 +235,12 @@ func (transport *huangguoBrowserTransport) RoundTrip(request *http.Request) (*ht
 		if result.StatusCode >= 400 || strings.EqualFold(result.Header.Get("Cf-Mitigated"), "challenge") {
 			level = "warning"
 		}
-		transport.record(diagnosticEvent{Event: "network.browser_request", Level: level, Source: sourceHuangguoVideo,
-			Host: request.URL.Hostname(), HTTPStatus: result.StatusCode, Client: huangguoBrowserProfile,
+		source := sourceHuangguoVideo
+		if isHongguoAppHost(request.URL.Hostname()) {
+			source = sourceHongguo
+		}
+		transport.record(diagnosticEvent{Event: "network.browser_request", Level: level, Source: source,
+			Host: request.URL.Hostname(), HTTPStatus: result.StatusCode, Client: browserProfileName(request),
 			Protocol: result.Proto, CFRay: truncate(result.Header.Get("Cf-Ray"), 128),
 			ResponseType: truncate(result.Header.Get("Content-Type"), 128), Message: "黄果浏览器指纹请求完成"})
 	}

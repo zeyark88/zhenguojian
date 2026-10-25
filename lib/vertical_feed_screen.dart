@@ -18,6 +18,8 @@ import 'local_store.dart';
 import 'models.dart';
 import 'network_state.dart';
 import 'playback_preferences.dart';
+import 'danmaku_controller.dart';
+import 'danmaku_overlay.dart';
 import 'playback_preloader.dart';
 import 'playback_recovery.dart';
 import 'player_interactions.dart';
@@ -1411,6 +1413,8 @@ class _FeedPage extends StatefulWidget {
 class _FeedPageState extends State<_FeedPage> with WidgetsBindingObserver {
   Player? _player;
   VideoController? _video;
+  DanmakuController? _danmaku;
+  bool _danmakuEnabled = true;
   PlayerInteractions? _interactions;
   final _subscriptions = <StreamSubscription<dynamic>>[];
   DramaDetail? _detail;
@@ -1642,6 +1646,8 @@ class _FeedPageState extends State<_FeedPage> with WidgetsBindingObserver {
     final preferences = widget.store.playbackPreferences;
     _speed = preferences.speed;
     _quality = preferences.quality;
+    _danmakuEnabled = preferences.danmaku;
+    _danmaku = DanmakuController(widget.repository)..setEnabled(_danmakuEnabled);
     // 单剧模式（0.2.29）：从指定集开始播放（详情页/下载页点的是第几集）。
     _episodeIndex = widget.initialEpisodeIndex;
     _pendingStart = widget.initialPosition;
@@ -2162,6 +2168,8 @@ class _FeedPageState extends State<_FeedPage> with WidgetsBindingObserver {
           _tick.value++;
           // 预载（0.2.31）：位置/缓冲变化时评估是否需要提前准备下一集/下一部。
           _syncPreload();
+          // 弹幕：跟随位置/时长/播放态推进。
+          _syncDanmaku();
           // 局域网推送（0.6.4）：**位置推进后**才回报握手。
           //
           // 这是握手的关键钩子：`acknowledge` 的判定要求
@@ -2363,6 +2371,7 @@ class _FeedPageState extends State<_FeedPage> with WidgetsBindingObserver {
     // 重置就绪/加载态：下次 `_prepare()` 会重新走一遍。
     _ready = false;
     _plan = null;
+    _danmaku?.setPlan(null);
     _loading = true;
     // 0.6.11 修复（用户反馈"偶发下一个视频黑屏不播放"）：
     //
@@ -2386,6 +2395,8 @@ class _FeedPageState extends State<_FeedPage> with WidgetsBindingObserver {
   @override
   void dispose() {
     _closed = true;
+    _danmaku?.dispose();
+    _danmaku = null;
     // 0.7.5：进度预览与亮度通知器释放（两者都由本页 State 持有）。
     _seekPreview.dispose();
     // 局域网推送（0.6.4）：注销本页的"正在播放"注册，并回报接收端已退出。
@@ -2990,6 +3001,8 @@ class _FeedPageState extends State<_FeedPage> with WidgetsBindingObserver {
       _detail = detail;
       _plan = plan;
       _episodeIndex = index;
+      _danmaku?.setPlan(plan);
+      _syncDanmaku(discontinuity: true);
       // 详情就绪后上报，让父级知道本页还能否切下一集（决定滑动语义）。
       _reportEpisodeState();
       // 续播位置（0.2.29）：只有首次打开、且传入了非零位置时才生效；
@@ -3337,6 +3350,42 @@ class _FeedPageState extends State<_FeedPage> with WidgetsBindingObserver {
   /// 亮度不再用画面滤镜（0.7.8）：改调窗口亮度，滤镜层直接透传。
   Widget _applyBrightness(Widget child) => child;
 
+  void _syncDanmaku({bool discontinuity = false}) {
+    final danmaku = _danmaku;
+    if (danmaku == null || _closed) return;
+    final state = _player?.state;
+    danmaku.update(
+      position: state?.position ?? Duration.zero,
+      duration: state?.duration ?? Duration.zero,
+      speed: state?.rate ?? 1,
+      playing: (state?.playing ?? false) && !_userPaused,
+      buffering: state?.buffering ?? false,
+      foreground: _foreground,
+      available:
+          !_loading &&
+          _error == null &&
+          widget.store.allowsSource('hongguo'),
+      discontinuity: discontinuity,
+    );
+  }
+
+  Future<void> _toggleDanmaku() async {
+    if (_closed) return;
+    final next = !_danmakuEnabled;
+    setState(() => _danmakuEnabled = next);
+    _danmaku?.setEnabled(next);
+    await widget.store.setPlaybackPreferences(
+      widget.store.playbackPreferences.copyWith(danmaku: next),
+    );
+    _syncDanmaku();
+  }
+
+  double get _danmakuAspectRatio {
+    final state = _player?.state;
+    final width = state?.width ?? 0, height = state?.height ?? 0;
+    return width > 0 && height > 0 ? width / height : 16 / 9;
+  }
+
   Future<void> _setSpeed(double value) async {
     if (_closed) return;
     setState(() => _speed = value);
@@ -3527,7 +3576,7 @@ class _FeedPageState extends State<_FeedPage> with WidgetsBindingObserver {
       ),
       builder: (context) => _sheetShell(
         title: '播放倍速',
-        // 0.2.31 改版：竖列列表改为 chip 胶囊组，选中项主题色填充。
+        // 0.2.31 改版：竖列列表改为 chip 胶囊组，选项项主题色填充。
         child: SingleChildScrollView(
           child: _optionWrap(
             children: [
@@ -4167,6 +4216,13 @@ class _FeedPageState extends State<_FeedPage> with WidgetsBindingObserver {
                       )
                     else
                       const ColoredBox(color: Colors.black),
+                    if (_danmakuEnabled && _danmaku != null)
+                      IgnorePointer(
+                        child: DanmakuOverlay(
+                          controller: _danmaku!,
+                          aspectRatio: _danmakuAspectRatio,
+                        ),
+                      ),
                     // 手势层（0.7.2，XQ-0105）：全屏横屏按左右分区处理
                     // 进度 / 亮度 / 音量 / 切集；单击显隐、双击暂停仍在这里。
                     Positioned.fill(
@@ -4442,6 +4498,19 @@ class _FeedPageState extends State<_FeedPage> with WidgetsBindingObserver {
                                             label: _followed ? '已追剧' : '追剧',
                                             onPressed: _toggleFollow,
                                           ),
+                                          _sideButton(
+                                            key: const ValueKey(
+                                              'fullscreen-danmaku',
+                                            ),
+                                            icon: _danmakuEnabled
+                                                ? Icons.subtitles_rounded
+                                                : Icons.subtitles_off_rounded,
+                                            label: _danmakuEnabled ? '弹幕' : '弹幕关',
+                                            color: _danmakuEnabled
+                                                ? const Color(0xFFFF765F)
+                                                : Colors.white,
+                                            onPressed: _toggleDanmaku,
+                                          ),
                                           if (!widget.singleDrama)
                                             _sideButton(
                                               key: const ValueKey(
@@ -4594,11 +4663,16 @@ class _FeedPageState extends State<_FeedPage> with WidgetsBindingObserver {
               fit: BoxFit.contain,
             ),
           )
-        else if (_landscape)
-          // 全屏时画面由全屏层渲染，这里留黑避免同一路视频被渲染两次。
-          const ColoredBox(color: Colors.black)
         else
+          // 无视频画面时兜底黑底。
           const ColoredBox(color: Colors.black),
+        if (_danmakuEnabled && !_landscape && _danmaku != null)
+          IgnorePointer(
+            child: DanmakuOverlay(
+              controller: _danmaku!,
+              aspectRatio: _danmakuAspectRatio,
+            ),
+          ),
         // 手势层：单击显隐控件，双击暂停，长按 3 倍速，上下滑切集；
         // 0.7.5（XQ-0108）：水平滑调进度（与上下滑互斥判定）。
         Positioned.fill(
@@ -4968,6 +5042,17 @@ class _FeedPageState extends State<_FeedPage> with WidgetsBindingObserver {
                                         : Icons.bookmark_border_rounded,
                                     label: _followed ? '已追剧' : '追剧',
                                     onPressed: _toggleFollow,
+                                  ),
+                                  _sideButton(
+                                    key: const ValueKey('feed-danmaku'),
+                                    icon: _danmakuEnabled
+                                        ? Icons.subtitles_rounded
+                                        : Icons.subtitles_off_rounded,
+                                    label: _danmakuEnabled ? '弹幕' : '弹幕关',
+                                    color: _danmakuEnabled
+                                        ? const Color(0xFFFF765F)
+                                        : Colors.white,
+                                    onPressed: _toggleDanmaku,
                                   ),
                                   if (!widget.singleDrama)
                                     _sideButton(

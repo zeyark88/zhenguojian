@@ -6,6 +6,8 @@ import 'package:flutter/services.dart';
 import 'core_bridge.dart';
 import 'local_store.dart';
 import 'models.dart';
+import 'source_gate_dialog.dart';
+import 'source_gate_taps.dart';
 import 'source_status.dart';
 
 String sourceTimestamp(DateTime? value) {
@@ -42,6 +44,7 @@ class _SourcesScreenState extends State<SourcesScreen> {
   Timer? _timer;
   bool _polling = false;
   int _ticks = 0;
+  final _gateTaps = RepeatTapGate();
 
   /// 是否正在"自动续批"更新（0.2.27）。
   ///
@@ -254,7 +257,17 @@ class _SourcesScreenState extends State<SourcesScreen> {
           return aFirst.compareTo(bFirst);
         });
       return Scaffold(
-        appBar: AppBar(title: const Text('站源管理')),
+        appBar: AppBar(
+          title: GestureDetector(
+            behavior: HitTestBehavior.opaque,
+            onDoubleTap: () {
+              if (_gateTaps.register('sources-title')) {
+                showSourceGateDialog(context, widget.store);
+              }
+            },
+            child: const Text('站源管理'),
+          ),
+        ),
         body: Center(
           child: ConstrainedBox(
             constraints: const BoxConstraints(maxWidth: 960),

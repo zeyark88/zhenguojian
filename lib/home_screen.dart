@@ -20,6 +20,8 @@ import 'downloads_screen.dart';
 import 'local_store.dart';
 import 'lan_screen.dart';
 import 'models.dart';
+import 'source_gate_dialog.dart';
+import 'source_gate_taps.dart';
 import 'remote_widgets.dart';
 import 'widgets.dart';
 import 'vip_icon.dart';
@@ -867,11 +869,24 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
     );
   }
 
-  void _changeTab(int tab) => setState(() {
-    _tab = tab;
-    _selectionMode = false;
-    _selectedDramas.clear();
-  });
+  final _gateTaps = RepeatTapGate();
+
+  void _changeTab(int tab) {
+    // 连点「最近观看」6 次弹出站源密码锁（合并自 0.2.x：默认隐藏的
+    // 敏感站源需在此启用/解锁密码后显示）。仅多源包生效。
+    if (allSourcesEnabled && tab == _historyIndex && mounted) {
+      if (_gateTaps.register(tab)) {
+        unawaited(showSourceGateDialog(context, widget.store));
+      }
+    } else {
+      _gateTaps.reset();
+    }
+    setState(() {
+      _tab = tab;
+      _selectionMode = false;
+      _selectedDramas.clear();
+    });
+  }
 
   /// 前后台切换（0.2.26 新增；0.2.27 修正）。
   ///

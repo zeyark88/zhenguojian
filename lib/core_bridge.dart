@@ -14,6 +14,7 @@ import 'local_store.dart';
 import 'app_build.dart';
 import 'source_status.dart';
 import 'ranking_models.dart';
+import 'danmaku_models.dart';
 import 'cover_decoder.dart';
 import 'catalog_updates.dart';
 import 'download_collections.dart';
@@ -112,6 +113,12 @@ abstract class AppRepository {
   Future<void> cancelCatalog() async {}
   Future<void> cancelSuggestions() async {}
   Future<void> cancelRecommendations() async {}
+  Future<void> cancelDanmaku() async {}
+  Future<DanmakuPage> danmaku(
+    PlaybackPlan plan, {
+    required int startMs,
+    required int durationMs,
+  }) async => throw AppFailure('当前环境不支持弹幕');
 
   /// 首页视频流专用的目录读取。
   ///
@@ -352,6 +359,31 @@ class NativeRepository extends AppRepository {
   Future<void> cancelSuggestions() => _cancelReads('suggestions');
   @override
   Future<void> cancelRecommendations() => _cancelReads('recommendations-');
+  @override
+  Future<void> cancelDanmaku() => _cancelReads('danmaku');
+
+  @override
+  Future<DanmakuPage> danmaku(
+    PlaybackPlan plan, {
+    required int startMs,
+    required int durationMs,
+  }) async {
+    _authorize('hongguo');
+    if (plan.local || plan.session.isEmpty || plan.danmakuId.isEmpty) {
+      throw AppFailure('本集暂不支持弹幕');
+    }
+    return DanmakuPage.fromJson(
+      await _read('danmaku', {
+        'action': 'danmaku',
+        'playbackSession': plan.session,
+        'startMs': startMs,
+        'durationMs': durationMs,
+      }),
+      episodeId: plan.danmakuId,
+      startMs: startMs,
+      durationMs: durationMs,
+    );
+  }
 
   @override
   Future<CatalogPage> feedCatalog(
@@ -561,7 +593,8 @@ class NativeRepository extends AppRepository {
       }
       if (action == 'recommendations' ||
           action == 'cachedRecommendations' ||
-          action == 'suggestions') {
+          action == 'suggestions' ||
+          action == 'danmaku') {
         _authorize('hongguo');
       }
       if ({
@@ -610,6 +643,8 @@ class NativeRepository extends AppRepository {
         Duration(
           seconds: action == 'moveDownloads'
               ? 620
+              : action == 'danmaku'
+              ? 15
               : action == 'preload'
               ? 20
               : 70,
@@ -644,6 +679,7 @@ class NativeRepository extends AppRepository {
             'suggestions',
             'recommendations',
             'metadata',
+            'danmaku',
             'preload',
             'prepareHandoff',
           }.contains(input['action'])) {
