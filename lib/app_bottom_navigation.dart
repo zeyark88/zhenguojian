@@ -7,6 +7,7 @@ class AppBottomNavigation extends StatelessWidget {
     required this.onDestinationSelected,
     required this.destinations,
     this.onDestinationDoubleTap,
+    this.onDestinationDoubleTapIndex,
   });
 
   final int selectedIndex;
@@ -15,6 +16,10 @@ class AppBottomNavigation extends StatelessWidget {
 
   /// 双击某个标签时的回调（例如双击"首页"重新随机）。
   final ValueChanged<int>? onDestinationDoubleTap;
+
+  /// 允许双击生效的标签索引；为空则对所有标签生效。
+  /// 限制后其它标签只保留单击，避免连点被双击判定抢占而丢失 onTap。
+  final int? onDestinationDoubleTapIndex;
 
   @override
   Widget build(BuildContext context) {
@@ -44,7 +49,9 @@ class AppBottomNavigation extends StatelessWidget {
                       child: InkWell(
                         key: ValueKey('bottom-nav-$index'),
                         onTap: () => onDestinationSelected(index),
-                        onDoubleTap: onDestinationDoubleTap == null
+                        onDoubleTap: onDestinationDoubleTap == null ||
+                                (onDestinationDoubleTapIndex != null &&
+                                    index != onDestinationDoubleTapIndex)
                             ? null
                             : () => onDestinationDoubleTap!(index),
                         child: ConstrainedBox(

@@ -1394,7 +1394,7 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
               : AppBottomNavigation(
                   selectedIndex: _tab,
                   onDestinationSelected: _changeTab,
-                  onDestinationDoubleTap: _onTabDoubleTap,
+                  onDestinationDoubleTap: _onTabDoubleTap, onDestinationDoubleTapIndex: _feedIndex,
                   destinations: [
                     NavigationDestination(
                       icon: Icon(Icons.smart_display_outlined),
