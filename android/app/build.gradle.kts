@@ -35,7 +35,7 @@ android {
         minSdk = 26
         targetSdk = flutter.targetSdkVersion
         versionCode = flutter.versionCode
-        versionName = "0.7.16+76a"
+        versionName = "0.7.17+77a"
         manifestPlaceholders["appLabel"] = if (allSources) "真果鉴" else "红果鉴"
         manifestPlaceholders["appBanner"] = if (allSources) "@drawable/tv_banner_all_sources" else "@drawable/tv_banner"
     }
