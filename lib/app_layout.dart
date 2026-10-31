@@ -6,6 +6,31 @@ export 'app_build.dart';
 
 const appVersion = '0.2.18';
 
+/// 平板主题：稍大的字号与更宽松的触控间距（非电视，不启用遥控焦点高亮）。
+ThemeData tabletTheme(ThemeData theme) {
+  final text = theme.textTheme;
+  return theme.copyWith(
+    visualDensity: VisualDensity.comfortable,
+    textTheme: text.copyWith(
+      bodyLarge: text.bodyLarge?.copyWith(fontSize: 17),
+      bodyMedium: text.bodyMedium?.copyWith(fontSize: 16),
+      bodySmall: text.bodySmall?.copyWith(fontSize: 14),
+      labelLarge: text.labelLarge?.copyWith(fontSize: 16),
+    ),
+    filledButtonTheme: FilledButtonThemeData(
+      style: FilledButton.styleFrom(
+        minimumSize: const Size(56, 48),
+        textStyle: const TextStyle(fontSize: 16),
+      ),
+    ),
+    iconButtonTheme: IconButtonThemeData(
+      style: IconButton.styleFrom(
+        minimumSize: const Size(46, 46),
+      ),
+    ),
+  );
+}
+
 ThemeData televisionTheme(ThemeData theme) {
   final colors = theme.colorScheme;
   final focusSide = WidgetStateProperty.resolveWith<BorderSide?>(
@@ -42,8 +67,11 @@ ThemeData televisionTheme(ThemeData theme) {
 }
 
 class AppDevice {
-  const AppDevice({this.television = false, this.version = appVersion});
-  final bool television;
+  const AppDevice({this.kind = 'phone', this.version = appVersion});
+  /// 设备类型：'phone'（手机）/ 'tablet'（平板）/ 'tv'（电视）。
+  final String kind;
+  bool get television => kind == 'tv';
+  bool get tablet => kind == 'tablet';
   final String version;
   static const channel = MethodChannel('duanju/device');
 
@@ -53,8 +81,10 @@ class AppDevice {
     }
     try {
       final data = await channel.invokeMapMethod<String, dynamic>('deviceInfo');
+      final tv = data?['television'] == true;
+      final tab = !tv && data?['tablet'] == true;
       return AppDevice(
-        television: data?['television'] == true,
+        kind: tv ? 'tv' : tab ? 'tablet' : 'phone',
         version: data?['version'] as String? ?? appVersion,
       );
     } on PlatformException {
@@ -68,21 +98,25 @@ class AppDevice {
 class AppLayout extends InheritedWidget {
   const AppLayout({
     super.key,
-    required this.television,
+    required this.kind,
     this.version = appVersion,
     required super.child,
   });
-  final bool television;
+  /// 设备类型：phone / tablet / tv。
+  final String kind;
+  bool get television => kind == 'tv';
+  bool get tablet => kind == 'tablet';
   final String version;
 
   static bool isTelevision(BuildContext context) =>
-      context.dependOnInheritedWidgetOfExactType<AppLayout>()?.television ??
-      false;
+      context.dependOnInheritedWidgetOfExactType<AppLayout>()?.kind == 'tv';
+  static bool isTablet(BuildContext context) =>
+      context.dependOnInheritedWidgetOfExactType<AppLayout>()?.kind == 'tablet';
   static String versionOf(BuildContext context) =>
       context.dependOnInheritedWidgetOfExactType<AppLayout>()?.version ??
       appVersion;
 
   @override
   bool updateShouldNotify(AppLayout oldWidget) =>
-      television != oldWidget.television || version != oldWidget.version;
+      kind != oldWidget.kind || version != oldWidget.version;
 }

@@ -16,7 +16,7 @@ void focusRemote(WidgetTester tester, Finder finder) {
 Widget televisionHost({required Widget child}) => MaterialApp(
   theme: televisionTheme(ThemeData.dark()),
   builder: (_, child) => AppLayout(
-    television: true,
+    kind: 'tv',
     child: Shortcuts(
       shortcuts: const {
         SingleActivator(LogicalKeyboardKey.select): ActivateIntent(),

@@ -34,7 +34,8 @@ class MainActivity : FlutterActivity() {
                     val television = mode.currentModeType == Configuration.UI_MODE_TYPE_TELEVISION ||
                         packageManager.hasSystemFeature(PackageManager.FEATURE_LEANBACK)
                     val version = packageManager.getPackageInfo(packageName, 0).versionName
-                    result.success(mapOf("television" to television, "version" to version))
+                    val tablet = !television && resources.configuration.screenWidthDp >= 600
+                    result.success(mapOf("television" to television, "tablet" to tablet, "version" to version))
                 } else if (call.method == "systemProxy") {
                     val connection = getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
                     val proxy = connection.defaultProxy

@@ -40,6 +40,16 @@ const hongguoDeviceRegisterUA = "com.phoenix.read/73932 (Linux; U; Android 16; z
 // 播放请求专用 UA：与"注册身份 + 无签名"路径配套，区别于列表/搜索的 UA。
 const hongguoPlaybackUA = "com.phoenix.read/71532 (Linux; U; Android 9; SM-N9860; Build/PQ3A.190705.10241111;tt-ok/3.12.13.20)"
 
+// 无签名取流失败时的备用 UA（对应红果客户端不同版本），轮换尝试增加通过率。
+var hongguoPlaybackUAs = []string{
+	hongguoPlaybackUA,
+	"com.phoenix.read/73532 (Linux; U; Android 16; zh_CN; 25053RT47C; Build/BP2A.250605.031.A3;tt-ok/3.13.0)",
+	"com.phoenix.read/73932 (Linux; U; Android 16; zh_CN; 25053RT47C; Build/BP2A.250605.031.A3)",
+}
+
+// 无签名播放最多尝试次数：首次用当前设备，空体/异常时换新设备身份 + 换 UA 重试。
+const hongguoPlaybackAttempts = 3
+
 // ttEncrypt 固定盐（与客户端 SDK 一致）。
 var hongguoDeviceKDFSalt, _ = hex.DecodeString(
 	"4dd4c2e6b83162090e52b3c7a6733ba41cb2462b829ab58a196b39db57177524" +
@@ -56,22 +66,24 @@ var (
 )
 
 // hongguoPlaybackIdentity 取（必要时先注册）匿名播放设备身份。
-func (downloader *Downloader) hongguoPlaybackIdentity(ctx context.Context) (string, string, error) {
+func (downloader *Downloader) hongguoPlaybackIdentity(ctx context.Context, refresh bool) (string, string, error) {
 	hongguoDeviceMu.Lock()
 	defer hongguoDeviceMu.Unlock()
-	if hongguoDeviceID != "" && hongguoDeviceInstall != "" {
+	if !refresh && hongguoDeviceID != "" && hongguoDeviceInstall != "" {
 		return hongguoDeviceID, hongguoDeviceInstall, nil
 	}
-	if !hongguoDeviceFailed.IsZero() && time.Since(hongguoDeviceFailed) < hongguoDeviceRetryCooldown {
+	if !refresh && !hongguoDeviceFailed.IsZero() && time.Since(hongguoDeviceFailed) < hongguoDeviceRetryCooldown {
 		return "", "", errors.New("红果播放身份暂不可用，请稍后重试")
 	}
-	deviceID, installID, err := downloader.registerHongguoPlaybackDevice(ctx)
+	deviceID, install, err := downloader.registerHongguoPlaybackDevice(ctx)
 	if err != nil {
-		hongguoDeviceFailed = time.Now()
+		if !refresh {
+			hongguoDeviceFailed = time.Now()
+		}
 		return "", "", err
 	}
-	hongguoDeviceID, hongguoDeviceInstall, hongguoDeviceFailed = deviceID, installID, time.Time{}
-	return deviceID, installID, nil
+	hongguoDeviceID, hongguoDeviceInstall, hongguoDeviceFailed = deviceID, install, time.Time{}
+	return deviceID, install, nil
 }
 
 // registerHongguoPlaybackDevice 调 device_register 注册匿名设备（ttEncrypt 加密请求体）。
@@ -213,79 +225,97 @@ func hongguoRandomUUID() string {
 
 // hongguoPlaybackModel 用「注册身份 + 无签名」取某集的 video_model。
 func (downloader *Downloader) hongguoPlaybackModel(ctx context.Context, videoID string) (map[string]any, error) {
-	deviceID, installID, err := downloader.hongguoPlaybackIdentity(ctx)
-	if err != nil {
-		return nil, err
-	}
-	query := url.Values{
-		"ac": {"wifi"}, "channel": {"update_64"}, "aid": {"8662"}, "app_name": {"novelread"},
-		"version_code": {"71332"}, "version_name": {"7.1.3.32"}, "device_platform": {"android"},
-		"os": {"android"}, "ssmix": {"a"}, "device_type": {"25053RT47C"}, "device_brand": {"Redmi"},
-		"language": {"zh"}, "os_api": {"36"}, "os_version": {"16"}, "manifest_version_code": {"71332"},
-		"resolution": {"1280*2772"}, "dpi": {"520"}, "update_version_code": {"71332"},
-		"host_abi": {"arm64-v8a"}, "dragon_device_type": {"phone"}, "pv_player": {"71332"},
-		"compliance_status": {"0"}, "need_personal_recommend": {"1"}, "player_so_load": {"1"},
-		"is_android_pad_screen": {"0"},
-		"device_id":             {deviceID},
-		"iid":                   {installID},
-		"_rticket":              {strconv.FormatInt(time.Now().UnixMilli(), 10)},
-	}
-	payload, err := json.Marshal(map[string]any{
-		"biz_param": map[string]any{
-			"detail_page_version":       0,
-			"device_level":              3,
-			"disable_digg_stat":         false,
-			"need_all_video_definition": true,
-			"need_mp4_align":            false,
-			"use_os_player":             false,
-			"use_server_dns":            false,
-			"video_platform":            1024,
-		},
-		"mixed_video_id_map": map[string]any{"1004": []string{videoID}},
-	})
-	if err != nil {
-		return nil, err
-	}
-	target := strings.TrimRight(downloader.hongguoAppBaseURL(), "/") + "/novel/player/multi_video_model/v1/?" + query.Encode()
-	request, err := http.NewRequestWithContext(ctx, http.MethodPost, target, bytes.NewReader(payload))
-	if err != nil {
-		return nil, err
-	}
-	// 刻意不签名：该接口会拦截带签名头的请求（HTTP 200 + 空体）。
-	request.Header.Set("User-Agent", hongguoPlaybackUA)
-	request.Header.Set("Accept", "application/json; charset=utf-8,application/x-protobuf")
-	request.Header.Set("Content-Type", "application/json; charset=UTF-8")
+	var lastErr error
+	for attempt := 0; attempt < hongguoPlaybackAttempts; attempt++ {
+		deviceID, installID, err := downloader.hongguoPlaybackIdentity(ctx, attempt > 0)
+		if err != nil {
+			lastErr = err
+			if attempt == 0 {
+				return nil, err
+			}
+			continue
+		}
+		query := url.Values{
+			"ac": {"wifi"}, "channel": {"update_64"}, "aid": {"8662"}, "app_name": {"novelread"},
+			"version_code": {"71332"}, "version_name": {"7.1.3.32"}, "device_platform": {"android"},
+			"os": {"android"}, "ssmix": {"a"}, "device_type": {"25053RT47C"}, "device_brand": {"Redmi"},
+			"language": {"zh"}, "os_api": {"36"}, "os_version": {"16"}, "manifest_version_code": {"71332"},
+			"resolution": {"1280*2772"}, "dpi": {"520"}, "update_version_code": {"71332"},
+			"host_abi": {"arm64-v8a"}, "dragon_device_type": {"phone"}, "pv_player": {"71332"},
+			"compliance_status": {"0"}, "need_personal_recommend": {"1"}, "player_so_load": {"1"},
+			"is_android_pad_screen": {"0"},
+			"device_id":             {deviceID},
+			"iid":                   {installID},
+			"_rticket":              {strconv.FormatInt(time.Now().UnixMilli(), 10)},
+		}
+		payload, err := json.Marshal(map[string]any{
+			"biz_param": map[string]any{
+				"detail_page_version":       0,
+				"device_level":              3,
+				"disable_digg_stat":         false,
+				"need_all_video_definition": true,
+				"need_mp4_align":            false,
+				"use_os_player":             false,
+				"use_server_dns":            false,
+				"video_platform":            1024,
+			},
+			"mixed_video_id_map": map[string]any{"1004": []string{videoID}},
+		})
+		if err != nil {
+			lastErr = err
+			continue
+		}
+		target := strings.TrimRight(downloader.hongguoAppBaseURL(), "/") + "/novel/player/multi_video_model/v1/?" + query.Encode()
+		request, err := http.NewRequestWithContext(ctx, http.MethodPost, target, bytes.NewReader(payload))
+		if err != nil {
+			lastErr = err
+			continue
+		}
+		// 刻意不签名：该接口会拦截带签名头的请求（HTTP 200 + 空体）。
+		// 换设备身份重试时顺带轮换 UA，提高间歇风控下的通过率。
+		request.Header.Set("User-Agent", hongguoPlaybackUAs[attempt%len(hongguoPlaybackUAs)])
+		request.Header.Set("Accept", "application/json; charset=utf-8,application/x-protobuf")
+		request.Header.Set("Content-Type", "application/json; charset=UTF-8")
 
-	response, err := downloader.doPreparedCatalogRequest(request, 15*time.Second, nil)
-	if err != nil {
-		return nil, err
+		response, err := downloader.doPreparedCatalogRequest(request, 15*time.Second, nil)
+		if err != nil {
+			lastErr = err
+			continue
+		}
+		content, readErr := io.ReadAll(io.LimitReader(response.Body, providerMaxBodyBytes+1))
+		response.Body.Close()
+		if readErr != nil {
+			lastErr = readErr
+			continue
+		}
+		if response.StatusCode != http.StatusOK {
+			lastErr = fmt.Errorf("红果播放接口 HTTP %d", response.StatusCode)
+			continue
+		}
+		if len(content) == 0 {
+			// 空体通常是红果对当前设备身份/UA 的间歇软拒，换身份换 UA 重试。
+			lastErr = errors.New("红果播放接口未返回数据")
+			continue
+		}
+		var parsed map[string]any
+		decoder := json.NewDecoder(bytes.NewReader(content))
+		decoder.UseNumber()
+		if err := decoder.Decode(&parsed); err != nil || parsed == nil {
+			lastErr = errors.New("红果播放接口返回格式异常")
+			continue
+		}
+		if code := mapString(parsed, "code", "Code"); code != "" && code != "0" {
+			return nil, fmt.Errorf("红果播放接口暂不可用（%s）", truncate(code, 20))
+		}
+		entry := nestedMap(nestedMap(parsed, "data"), videoID)
+		model := hongguoVideoModel(entry["video_model"])
+		if len(model) == 0 {
+			lastErr = errors.New("红果播放接口未返回该集片源")
+			continue
+		}
+		return model, nil
 	}
-	defer response.Body.Close()
-	content, err := io.ReadAll(io.LimitReader(response.Body, providerMaxBodyBytes+1))
-	if err != nil {
-		return nil, err
-	}
-	if response.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("红果播放接口 HTTP %d", response.StatusCode)
-	}
-	if len(content) == 0 {
-		return nil, errors.New("红果播放接口未返回数据")
-	}
-	var parsed map[string]any
-	decoder := json.NewDecoder(bytes.NewReader(content))
-	decoder.UseNumber()
-	if err := decoder.Decode(&parsed); err != nil || parsed == nil {
-		return nil, errors.New("红果播放接口返回格式异常")
-	}
-	if code := mapString(parsed, "code", "Code"); code != "" && code != "0" {
-		return nil, fmt.Errorf("红果播放接口暂不可用（%s）", truncate(code, 20))
-	}
-	entry := nestedMap(nestedMap(parsed, "data"), videoID)
-	model := hongguoVideoModel(entry["video_model"])
-	if len(model) == 0 {
-		return nil, errors.New("红果播放接口未返回该集片源")
-	}
-	return model, nil
+	return nil, lastErr
 }
 
 // hongguoAppBaseURL 读取当前红果 App 接口基地址。

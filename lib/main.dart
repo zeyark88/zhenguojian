@@ -185,6 +185,7 @@ class _AppBootstrapState extends State<AppBootstrap>
     bootstrapError: error?.toString(),
     onRetry: _initialize,
     television: device.television,
+    tablet: device.tablet,
     version: device.version,
     navigatorKey: navigator,
     feedReady: _feedReady,
@@ -199,6 +200,7 @@ class DuanjuApp extends StatelessWidget {
     this.bootstrapError,
     this.onRetry,
     this.television = false,
+    this.tablet = false,
     this.version = appVersion,
     this.navigatorKey,
     this.feedPlayerFactory,
@@ -209,6 +211,7 @@ class DuanjuApp extends StatelessWidget {
   final String? bootstrapError;
   final VoidCallback? onRetry;
   final bool television;
+  final bool tablet;
   final String version;
   final GlobalKey<NavigatorState>? navigatorKey;
 
@@ -237,16 +240,18 @@ class DuanjuApp extends StatelessWidget {
     builder: (context, child) {
       final mode = store?.displayMode ?? 'auto';
       final tv = mode == 'television' || mode == 'auto' && television;
+      final tab = !tv && (mode == 'tablet' || mode == 'auto' && tablet);
+      final deviceKind = tv ? 'tv' : tab ? 'tablet' : 'phone';
       final theme = Theme.of(context);
       return AnnotatedRegion<SystemUiOverlayStyle>(
         value: AppTheme.systemBars(theme.brightness),
         child: ColoredBox(
           color: theme.scaffoldBackgroundColor,
           child: AppLayout(
-            television: tv,
+            kind: deviceKind,
             version: version,
             child: Theme(
-              data: tv ? televisionTheme(theme) : theme,
+              data: tv ? televisionTheme(theme) : tab ? tabletTheme(theme) : theme,
               child: Shortcuts(
                 shortcuts: const {
                   SingleActivator(

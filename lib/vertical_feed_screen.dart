@@ -1,4 +1,6 @@
 import 'dart:async';
+
+import 'app_layout.dart';
 import 'dart:math' as math;
 
 import 'package:flutter/foundation.dart';
@@ -223,8 +225,11 @@ class _VerticalFeedScreenState extends State<VerticalFeedScreen>
   /// 导致"标题已换成新剧、视频却还是上一部"的严重错乱。
   Future<void> Function()? _pagePlayNextEpisode;
 
-  /// 当前页「切到上一集」的执行入口（由子页上报）。
+  /// 当前页「切到上一集」的入口（由子页上报）。
   Future<void> Function()? _pagePlayPrevEpisode;
+
+  /// 当前页「播放 / 暂停」的入口（由子页上报，供遥控器播放键调用）。
+  VoidCallback? _pageTogglePlayback;
 
   /// 是否已上报过就绪（只回调一次）。
   bool _reportedReady = false;
@@ -632,10 +637,12 @@ class _VerticalFeedScreenState extends State<VerticalFeedScreen>
     Future<void> Function()? playNext,
     bool hasPrev = false,
     Future<void> Function()? playPrev,
+    VoidCallback? playbackToggle,
   }) {
     if (_closed) return;
     _pagePlayNextEpisode = hasNext ? playNext : null;
     _pagePlayPrevEpisode = hasPrev ? playPrev : null;
+    _pageTogglePlayback = playbackToggle;
   }
 
   /// 处理竖向拖拽结束时的滑动判定（仅在 PageView 被禁用滚动时生效）。
@@ -846,12 +853,22 @@ class _VerticalFeedScreenState extends State<VerticalFeedScreen>
     );
   }
 
-  /// 遥控器 / 键盘上下键切换。
+  /// 遥控器 / 键盘上下键切换、播放暂停。
   KeyEventResult _onKey(FocusNode node, KeyEvent event) {
     if (event is! KeyDownEvent && event is! KeyRepeatEvent) {
       return KeyEventResult.ignored;
     }
     final key = event.logicalKey;
+    // 播放 / 暂停：电视遥控器播放键、确认键（DPAD_CENTER）与空格。
+    if (key == LogicalKeyboardKey.mediaPlayPause ||
+        key == LogicalKeyboardKey.enter ||
+        key == LogicalKeyboardKey.select ||
+        key == LogicalKeyboardKey.space) {
+      _pageTogglePlayback?.call();
+      return _pageTogglePlayback != null
+          ? KeyEventResult.handled
+          : KeyEventResult.ignored;
+    }
     if (key == LogicalKeyboardKey.arrowDown ||
         key == LogicalKeyboardKey.mediaTrackNext) {
       _jump(1);
@@ -907,7 +924,15 @@ class _VerticalFeedScreenState extends State<VerticalFeedScreen>
       child: ColoredBox(color: Colors.black, child: _body()),
     );
     if (widget.embedded) return content;
-    return Scaffold(
+    final television = AppLayout.isTelevision(context);
+    return PopScope(
+      canPop: !television,
+      onPopInvokedWithResult: (didPop, _) {
+        if (didPop || !television || _closed) return;
+        final drama = _index < _items.length ? _items[_index] : null;
+        if (drama != null) unawaited(_openDetail(drama));
+      },
+      child: Scaffold(
       backgroundColor: Colors.black,
       body: SafeArea(
         child: Column(
@@ -916,6 +941,7 @@ class _VerticalFeedScreenState extends State<VerticalFeedScreen>
             Expanded(child: content),
           ],
         ),
+      ),
       ),
     );
   }
@@ -1294,6 +1320,7 @@ typedef EpisodeStateReporter =
       Future<void> Function()? playNext,
       bool hasPrev,
       Future<void> Function()? playPrev,
+      VoidCallback? playbackToggle,
     });
 
 /// 单页：一个视频 + 播放控件 + 信息栏。
@@ -2856,6 +2883,7 @@ class _FeedPageState extends State<_FeedPage> with WidgetsBindingObserver {
       playNext: hasNext ? playNextEpisode : null,
       hasPrev: hasPrev,
       playPrev: hasPrev ? playPrevEpisode : null,
+      playbackToggle: _togglePlayback,
     );
   }
 
