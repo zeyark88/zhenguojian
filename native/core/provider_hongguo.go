@@ -212,11 +212,8 @@ func (d *Downloader) resolveHongguoMedia(ctx context.Context, task Task) (provid
 	if err := ctx.Err(); err != nil {
 		return providerMedia{}, err
 	}
-	media, apiErr := d.resolveHongguoPlaybackAPI(ctx, seriesID, videoID)
-	if apiErr == nil {
-		return media, nil
-	}
-	return providerMedia{}, fmt.Errorf("红果 App 取流失败：%v；网页取流失败：%v；备用取流失败：%w", publicError(nativeErr), publicError(pageErr), apiErr)
+	// 备用中转已失效（djapi.999888456.xyz TLS 不可用），不再尝试以免白白耗时与报错。
+	return providerMedia{}, fmt.Errorf("红果 App 取流失败：%v；网页取流失败：%v", publicError(nativeErr), publicError(pageErr))
 }
 
 func (d *Downloader) resolveHongguoWebMedia(ctx context.Context, seriesID, videoID string) (providerMedia, error) {

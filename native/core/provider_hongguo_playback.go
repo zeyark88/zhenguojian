@@ -1,7 +1,6 @@
 package core
 
 import (
-	"context"
 	"crypto/aes"
 	"crypto/cipher"
 	"encoding/base64"
@@ -10,13 +9,11 @@ import (
 	"errors"
 	"fmt"
 	"math/bits"
-	"net/url"
 	"regexp"
 	"strconv"
 	"strings"
 )
 
-const hongguoPlaybackAPI = "https://djapi.999888456.xyz/api/hongguo/play"
 
 var hongguoNumericID = regexp.MustCompile(`^[0-9]{1,32}$`)
 
@@ -41,70 +38,6 @@ type hongguoPlaybackResponse struct {
 	} `json:"key_urls"`
 }
 
-func (d *Downloader) resolveHongguoPlaybackAPI(ctx context.Context, seriesID, videoID string) (providerMedia, error) {
-	if !hongguoNumericID.MatchString(seriesID) || !hongguoNumericID.MatchString(videoID) {
-		return providerMedia{}, errors.New("红果播放请求缺少有效的剧集 ID")
-	}
-	reference, err := json.Marshal(hongguoPlaybackReference{ContentType: 1004, SeriesID: seriesID, VideoID: videoID, VideoPlatform: 3})
-	if err != nil {
-		return providerMedia{}, err
-	}
-	query := url.Values{"id": {base64.StdEncoding.EncodeToString(reference)}}
-	body, err := d.fetchProviderText(ctx, hongguoPlaybackAPI+"?"+query.Encode(), hongguoBaseURL+"/")
-	if err != nil {
-		return providerMedia{}, err
-	}
-	decoded, err := decodeHongguoPlaybackResponse(body)
-	if err != nil {
-		return providerMedia{}, err
-	}
-	var response hongguoPlaybackResponse
-	if err := json.Unmarshal(decoded, &response); err != nil {
-		return providerMedia{}, errors.New("红果备用播放接口返回了无效数据")
-	}
-	for _, flag := range []json.RawMessage{response.Parse, response.JX} {
-		switch strings.TrimSpace(string(flag)) {
-		case "", "null", "false", "0", `"0"`, `""`:
-		default:
-			return providerMedia{}, errors.New("红果备用播放接口没有返回直接媒体地址")
-		}
-	}
-	var selected providerMedia
-	bestQuality := -1
-	var keyErr error
-	var variants []providerMedia
-	for _, option := range response.KeyURLs {
-		mediaURL := strings.TrimSpace(option.URL)
-		if len(mediaURL) > 8192 || !isProviderHTTPMediaURL(mediaURL) {
-			continue
-		}
-		keyID, err := hex.DecodeString(strings.TrimSpace(option.KeyID))
-		if err != nil || len(keyID) != aes.BlockSize {
-			keyErr = errors.New("红果媒体密钥标识无效")
-			continue
-		}
-		key, err := hongguoContentKey(option.SpadeA)
-		if err != nil {
-			keyErr = err
-			continue
-		}
-		quality, _ := strconv.Atoi(hongguoQualityNumber.FindString(option.Name))
-		media := providerMedia{URL: mediaURL, Referer: "https://novel.snssdk.com/", CENCKey: key, Quality: quality}
-		variants = append(variants, media)
-		if selected.URL == "" || quality > bestQuality {
-			selected = media
-			bestQuality = quality
-		}
-	}
-	if selected.URL != "" {
-		selected.Variants = variants
-		return selected, nil
-	}
-	if keyErr != nil {
-		return providerMedia{}, keyErr
-	}
-	return providerMedia{}, errors.New("红果备用播放接口未返回该集可用的媒体和密钥，请稍后重试或确认该集是否仍可访问")
-}
 
 func decodeHongguoPlaybackResponse(body string) ([]byte, error) {
 	text := strings.TrimSpace(body)

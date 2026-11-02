@@ -20,6 +20,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"duanjuapp/native/core/fqsign"
 )
 
 // 红果播放取流：注册匿名设备身份 + 无签名请求（0.7.17）。
@@ -35,19 +37,16 @@ import (
 const hongguoDeviceRegisterURL = "https://log5-applog-lf.fqnovel.com/service/2/device_register/" +
 	"?tt_data=a&cronet_version=8d40f833_2026-03-03&ttnet_version=4.2.243.31-douyin&use_store_region_cookie=1"
 
-const hongguoDeviceRegisterUA = "com.phoenix.read/73932 (Linux; U; Android 16; zh_CN; 25053RT47C; Build/BP2A.250605.031.A3)"
+const hongguoDeviceRegisterUA = "com.phoenix.read/74332 (Linux; U; Android 16; zh_CN; 25053RT47C; Build/BP2A.250605.031.A3)"
 
 // 播放请求专用 UA：与"注册身份 + 无签名"路径配套，区别于列表/搜索的 UA。
-const hongguoPlaybackUA = "com.phoenix.read/71532 (Linux; U; Android 9; SM-N9860; Build/PQ3A.190705.10241111;tt-ok/3.12.13.20)"
+const hongguoPlaybackUA = "com.phoenix.read/74332 (Linux; U; Android 16; zh_CN; 25053RT47C; Build/BP2A.250605.031.A3;tt-ok/3.14.0)"
 
-// 无签名取流失败时的备用 UA（对应红果客户端不同版本），轮换尝试增加通过率。
 var hongguoPlaybackUAs = []string{
 	hongguoPlaybackUA,
-	"com.phoenix.read/73532 (Linux; U; Android 16; zh_CN; 25053RT47C; Build/BP2A.250605.031.A3;tt-ok/3.13.0)",
 	"com.phoenix.read/73932 (Linux; U; Android 16; zh_CN; 25053RT47C; Build/BP2A.250605.031.A3)",
 }
 
-// 无签名播放最多尝试次数：首次用当前设备，空体/异常时换新设备身份 + 换 UA 重试。
 const hongguoPlaybackAttempts = 3
 
 // ttEncrypt 固定盐（与客户端 SDK 一致）。
@@ -107,7 +106,7 @@ func (downloader *Downloader) registerHongguoPlaybackDevice(ctx context.Context)
 	request.Header.Set("x-neptune", "-8|50:51:59:30:40:47:49:39")
 	request.Header.Set("x-ss-stub", strings.ToUpper(fmt.Sprintf("%X", md5.Sum(body))))
 
-	response, err := downloader.doPreparedCatalogRequest(request, 8*time.Second, nil)
+	response, err := downloader.doPreparedCatalogRequest(request, 6*time.Second, nil)
 	if err != nil {
 		return "", "", fmt.Errorf("红果播放身份注册失败: %w", err)
 	}
@@ -156,9 +155,9 @@ func hongguoRegisterID(payload map[string]any, name string) string {
 // 密钥：sha512( sha512(random) + KDF_SALT )，前 16 字节作 key、后 16 字节作 IV。
 func hongguoDeviceRegisterBody(now int64) []byte {
 	header := map[string]any{
-		"display_name": "红果免费短剧", "update_version_code": 73932, "manifest_version_code": 73932,
-		"app_version_minor": "7.3.9.32", "aid": 8662, "channel": "update_64", "package": "com.phoenix.read",
-		"app_version": "7.3.9.32", "version_code": 73932, "sdk_version": "3.7.0-rc.34-fanqie-xiaoshuo",
+		"display_name": "红果免费短剧", "update_version_code": 74332, "manifest_version_code": 74332,
+		"app_version_minor": "7.4.3.32", "aid": 8662, "channel": "update_64", "package": "com.phoenix.read",
+		"app_version": "7.4.3.32", "version_code": 74332, "sdk_version": "3.7.0-rc.34-fanqie-xiaoshuo",
 		"sdk_target_version": 29, "git_hash": "3a88f4e", "os": "Android", "os_version": "16", "os_api": 36,
 		"device_model": "25053RT47C", "device_brand": "Redmi", "device_manufacturer": "Redmi",
 		"cpu_abi": "arm64-v8a", "release_build": "b5e187f", "density_dpi": 520, "display_density": "mdpi",
@@ -227,7 +226,18 @@ func hongguoRandomUUID() string {
 func (downloader *Downloader) hongguoPlaybackModel(ctx context.Context, videoID string) (map[string]any, error) {
 	var lastErr error
 	for attempt := 0; attempt < hongguoPlaybackAttempts; attempt++ {
-		deviceID, installID, err := downloader.hongguoPlaybackIdentity(ctx, attempt > 0)
+		if attempt > 0 {
+			// 快速退避：150ms 再试，既给网关一点窗口也不拖慢起播。
+			select {
+			case <-time.After(150 * time.Millisecond):
+			case <-ctx.Done():
+				return nil, ctx.Err()
+			}
+		}
+		// 播放失败先用同一设备身份重试（仅轮换 UA），只有最后一次才换新设备，
+		// 避免每次失败都重新注册导致红果对新设备高频注册限流。
+		refresh := attempt == hongguoPlaybackAttempts-1
+		deviceID, installID, err := downloader.hongguoPlaybackIdentity(ctx, refresh)
 		if err != nil {
 			lastErr = err
 			if attempt == 0 {
@@ -237,15 +247,17 @@ func (downloader *Downloader) hongguoPlaybackModel(ctx context.Context, videoID 
 		}
 		query := url.Values{
 			"ac": {"wifi"}, "channel": {"update_64"}, "aid": {"8662"}, "app_name": {"novelread"},
-			"version_code": {"71332"}, "version_name": {"7.1.3.32"}, "device_platform": {"android"},
+			"version_code": {"74332"}, "version_name": {"7.4.3.32"}, "device_platform": {"android"},
 			"os": {"android"}, "ssmix": {"a"}, "device_type": {"25053RT47C"}, "device_brand": {"Redmi"},
-			"language": {"zh"}, "os_api": {"36"}, "os_version": {"16"}, "manifest_version_code": {"71332"},
-			"resolution": {"1280*2772"}, "dpi": {"520"}, "update_version_code": {"71332"},
-			"host_abi": {"arm64-v8a"}, "dragon_device_type": {"phone"}, "pv_player": {"71332"},
+			"language": {"zh"}, "os_api": {"36"}, "os_version": {"16"}, "manifest_version_code": {"74332"},
+			"resolution": {"1280*2772"}, "dpi": {"520"}, "update_version_code": {"74332"},
+			"host_abi": {"arm64-v8a"}, "dragon_device_type": {"phone"}, "pv_player": {"74332"},
 			"compliance_status": {"0"}, "need_personal_recommend": {"1"}, "player_so_load": {"1"},
 			"is_android_pad_screen": {"0"},
 			"device_id":             {deviceID},
 			"iid":                   {installID},
+			"uid":                   {"0"},
+			"logid":                 {hongguoRandomHex(16)},
 			"_rticket":              {strconv.FormatInt(time.Now().UnixMilli(), 10)},
 		}
 		payload, err := json.Marshal(map[string]any{
@@ -265,17 +277,43 @@ func (downloader *Downloader) hongguoPlaybackModel(ctx context.Context, videoID 
 			lastErr = err
 			continue
 		}
-		target := strings.TrimRight(downloader.hongguoAppBaseURL(), "/") + "/novel/player/multi_video_model/v1/?" + query.Encode()
+		target := strings.TrimRight(downloader.hongguoAppBaseURL(), "/") + "/novel/player/multi_video_model/player/v1/?" + query.Encode()
 		request, err := http.NewRequestWithContext(ctx, http.MethodPost, target, bytes.NewReader(payload))
 		if err != nil {
 			lastErr = err
 			continue
 		}
-		// 刻意不签名：该接口会拦截带签名头的请求（HTTP 200 + 空体）。
-		// 换设备身份重试时顺带轮换 UA，提高间歇风控下的通过率。
+		// 真签名（fqapp 同源算法，ByteDance 通用 x-khronos/x-ladon/x-argus）：
+		// 旧「无签名」路径已被红果新规则拒收（HTTP 200 + 空体），
+		// 改为带完整签名的请求；签名同时覆盖 query 与 body。
+		// 用同一设备重试时轮换 UA，提高间歇风控下的通过率。
 		request.Header.Set("User-Agent", hongguoPlaybackUAs[attempt%len(hongguoPlaybackUAs)])
 		request.Header.Set("Accept", "application/json; charset=utf-8,application/x-protobuf")
 		request.Header.Set("Content-Type", "application/json; charset=UTF-8")
+		request.Header.Set("x-xs-from-web", "0")
+		request.Header.Set("sdk-version", "2")
+		now := time.Now().Unix()
+		stubHex := ""
+		if len(payload) > 0 {
+			bodySum := md5.Sum(payload)
+			stubHex = hex.EncodeToString(bodySum[:])
+		}
+		request.Header.Set("x-ss-req-ticket", strconv.FormatInt(time.Now().UnixMilli(), 10))
+		request.Header.Set("x-khronos", strconv.FormatInt(now, 10))
+		request.Header.Set("x-ladon", fqsign.LadonEncrypt(now, 1611921764, 8662, fqsign.RandomBytes(4)))
+		request.Header.Set("x-argus", fqsign.ArgusGetSign(fqsign.ArgusParams{
+			QueryString: rawQueryOf(target),
+			StubHex:     stubHex,
+			Timestamp:   now,
+			Aid:         8662,
+			LicenseID:   1611921764,
+			DeviceID:    deviceID,
+			InstallID:   installID,
+			Style:       fqsign.ArgusStyle551,
+		}))
+		if stubHex != "" {
+			request.Header.Set("x-ss-stub", strings.ToUpper(stubHex))
+		}
 
 		response, err := downloader.doPreparedCatalogRequest(request, 15*time.Second, nil)
 		if err != nil {
@@ -293,7 +331,6 @@ func (downloader *Downloader) hongguoPlaybackModel(ctx context.Context, videoID 
 			continue
 		}
 		if len(content) == 0 {
-			// 空体通常是红果对当前设备身份/UA 的间歇软拒，换身份换 UA 重试。
 			lastErr = errors.New("红果播放接口未返回数据")
 			continue
 		}
@@ -324,4 +361,12 @@ func (downloader *Downloader) hongguoAppBaseURL() string {
 	client.mu.Lock()
 	defer client.mu.Unlock()
 	return client.baseURL
+}
+
+// rawQueryOf 从完整 URL 取原始 query（不做解码，签名对原始串）。
+func rawQueryOf(target string) string {
+	if i := strings.IndexByte(target, '?'); i >= 0 {
+		return target[i+1:]
+	}
+	return ""
 }

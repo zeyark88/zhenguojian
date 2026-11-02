@@ -278,6 +278,13 @@ func newNativeEngine(directory string) (*nativeEngine, error) {
 			return nil
 		}}
 	engine := &nativeEngine{downloader: d, directory: directory, catalogs: map[string][]nativeDrama{}, catalogStates: map[string]nativeCatalogState{}}
+	// 起播提速：启动即后台预热红果播放设备身份（device_register），
+	// 首次点开红果剧时无需现场注册（原先串行 8s 超时等待，是首播最慢的一环）。
+	go func() {
+		prewarmCtx, cancel := context.WithTimeout(context.Background(), 12*time.Second)
+		defer cancel()
+		_, _, _ = d.hongguoPlaybackIdentity(prewarmCtx, false)
+	}()
 	engine.loadResourceSettings()
 	d.loadRankingCache()
 	engine.loadCatalogCache()
