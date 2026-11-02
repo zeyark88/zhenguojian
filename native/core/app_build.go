@@ -13,7 +13,7 @@ func nativeSourceAvailable(source string) bool {
 	}
 	// 默认版：红果 + 韩小圈 + 鬼片 + 青空（常用四源直显，与 Dart primaryValues 一致）。
 	switch source {
-	case sourceHongguo, sourceHanxiaoquan, sourceGuipian, sourceSorani:
+	case sourceHongguo, sourceHanxiaoquan, sourceGuipian:
 		return true
 	}
 	return false
@@ -48,8 +48,11 @@ func nativeAuthorizeInput(input nativeInput) error {
 	case "castDiscover":
 		// 局域网设备发现，不涉及站源内容。
 	case "castStart":
-		// 投屏的媒体需能被本机播放授权（沿用 prepareHandoff 全套校验）。
-		if !nativeDramaAvailable(input.Drama) || !nativeChapterAvailable(input.Drama, input.Chapter) {
+		// 投屏授权：投屏地址必须来自本机持有的活动播放计划（playbackSession），
+		// 或调用方带完整 Drama/Chapter（桌面等场景）。Dart 端只传 playbackSession，
+		// 误走 Drama 校验会让每次投屏都报「当前版本不包含此站源」。
+		if input.PlaybackSession == "" &&
+			(!nativeDramaAvailable(input.Drama) || !nativeChapterAvailable(input.Drama, input.Chapter)) {
 			return errNativeBuildSource
 		}
 	case "recommendations", "cachedRecommendations", "suggestions", "danmaku":

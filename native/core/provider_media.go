@@ -37,8 +37,6 @@ func (d *Downloader) providerBaseURL(source string) string {
 		configured, fallback = d.cfg.HuangjuURL, huangjuBaseURL
 	case sourceYeguo:
 		configured, fallback = d.cfg.YeguoURL, yeguoBaseURL
-	case sourceSorani:
-		configured, fallback = d.cfg.SoraniURL, soraniSiteBaseURL
 	case sourceGuipian:
 		configured, fallback = d.cfg.GuipianURL, guipianSiteBaseURL
 	case sourceHanxiaoquan:
@@ -71,8 +69,6 @@ func providerSourceForURL(raw string) string {
 		strings.HasSuffix(host, ".fzchosdi.cc") ||
 		host == "delta.ygrwdsgt.cc" || host == "yeguodj.com" || host == "www.yeguodj.com":
 		return sourceYeguo
-	case host == "sorani.net" || host == "www.sorani.net" || host == "api.sorani.cc" || host == "sorani.cc":
-		return sourceSorani
 	case host == "guipianwu.com" || host == "www.guipianwu.com":
 		return sourceGuipian
 	case host == "jennyhow.com" || host == "www.jennyhow.com":
@@ -125,9 +121,6 @@ func (d *Downloader) resolveProviderMedia(ctx context.Context, task Task) (provi
 	}
 	if chapter.Source == sourceYeguo {
 		return d.resolveYeguoMedia(ctx, task)
-	}
-	if chapter.Source == sourceSorani {
-		return d.resolveSoraniMedia(ctx, task)
 	}
 	if chapter.Source == sourceGuipian {
 		return d.resolveGuipianMedia(ctx, task)

@@ -31,7 +31,6 @@ const castSSDPProbe = "M-SEARCH * HTTP/1.1\r\n" +
 var castUSNPattern = regexp.MustCompile(`(?im)^USN:\s*(.+)$`)
 var castLocationPattern = regexp.MustCompile(`(?im)^LOCATION:\s*(.+)$`)
 var castServerPattern = regexp.MustCompile(`(?im)^SERVER:\s*(.+)$`)
-var castSTPattern = regexp.MustCompile(`(?im)^ST:\s*(.+)$`)
 
 // castDevice 一台可投屏的 DLNA 渲染器。
 type castDevice struct {
@@ -41,13 +40,6 @@ type castDevice struct {
 	Server   string `json:"server,omitempty"`
 	// SOAP 控制端点（从设备描述 XML 解析）。
 	ControlURL string `json:"controlUrl"`
-}
-
-func (d castDevice) describe() string {
-	if d.Server != "" {
-		return d.Server
-	}
-	return "DLNA"
 }
 
 // discoverCastDevices 在局域网内 SSDP 搜索 DLNA 媒体渲染器。
@@ -100,10 +92,29 @@ func discoverCastDevices(ctx context.Context) ([]castDevice, error) {
 		seen[usn] = device
 	}
 
-	devices := make([]castDevice, 0, len(seen))
+	// 并发拉取各设备描述（原先串行时多设备会拖到 10s+，每台最多 4s）。
+	type result struct {
+		device castDevice
+		ok     bool
+	}
+	results := make([]result, len(seen))
+	var wg sync.WaitGroup
+	i := 0
 	for _, device := range seen {
-		if parsed, err := loadCastDeviceDescription(ctx, device); err == nil {
-			devices = append(devices, parsed)
+		wg.Add(1)
+		go func(slot int, d castDevice) {
+			defer wg.Done()
+			if parsed, err := loadCastDeviceDescription(ctx, d); err == nil {
+				results[slot] = result{parsed, true}
+			}
+		}(i, device)
+		i++
+	}
+	wg.Wait()
+	devices := make([]castDevice, 0, len(results))
+	for _, r := range results {
+		if r.ok {
+			devices = append(devices, r.device)
 		}
 	}
 	sort.Slice(devices, func(i, j int) bool { return devices[i].Name < devices[j].Name })
@@ -264,39 +275,6 @@ func firstMatch(pattern *regexp.Regexp, text string) string {
 	return strings.TrimSpace(match[1])
 }
 
-// castEngine 需要把本机播放地址转成局域网可访问的（本机起临时 HTTP 服务把流转发给电视）。
-var castServeOnce sync.Once
-var castServeMux sync.Mutex
-var castStreams = map[string]func(w http.ResponseWriter, r *http.Request){}
-
-// registerCastStream 登记一条可被电视拉取的转发流，返回局域网 URL。
-func registerCastStream(key string, handler func(w http.ResponseWriter, r *http.Request)) (string, error) {
-	castServeOnce.Do(func() {
-		go func() {
-			listener, err := net.Listen("tcp", ":0")
-			if err != nil {
-				return
-			}
-			server := &http.Server{Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				path := strings.TrimPrefix(r.URL.Path, "/cast/")
-				castServeMux.Lock()
-				handler, ok := castStreams[path]
-				castServeMux.Unlock()
-				if ok {
-					handler(w, r)
-					return
-				}
-				http.NotFound(w, r)
-			})}
-			_ = server.Serve(listener)
-		}()
-	})
-	castServeMux.Lock()
-	castStreams[key] = handler
-	castServeMux.Unlock()
-	return "/cast/" + key, nil
-}
-
 // nativeCastDiscover 桥接：搜索局域网 DLNA 设备并返回列表。
 func (engine *nativeEngine) nativeCastDiscover(ctx context.Context) (map[string]any, error) {
 	devices, err := discoverCastDevices(ctx)
@@ -326,8 +304,32 @@ func (engine *nativeEngine) nativeCastStart(ctx context.Context, input nativeInp
 	if input.MediaURL == "" {
 		return nil, errors.New("投屏地址无效")
 	}
-	// 授权：需要本机已有该媒体的播放会话或本地址可播放。
-	if err := nativeAuthorizeInput(input); err != nil {
+	// 授权：地址必须来自本机活动播放计划（playbackSession 在 playbacks 表内且未过期），
+	// 或调用方带完整 Drama/Chapter（nativeAuthorizeInput 内校验）。
+	if token := input.PlaybackSession; token != "" {
+		engine.mu.Lock()
+		choice, active := engine.playbacks[token]
+		engine.mu.Unlock()
+		if !active {
+			return nil, errors.New("播放会话已过期，请先在本机播放后再投屏")
+		}
+		// 电视直拉不了的流（AES-128 加密 / 需 Referer）自动转本机中继：
+		// 电视拉手机，手机补头/解密后回源——不再直接拒绝。
+		if castBlockReason(choice.media) != "" {
+			target := choice.media[0]
+			relay := &relayStream{
+				playlistURL: target.URL,
+				referer:     target.Referer,
+				userAgent:   "Mozilla/5.0 (Linux; Android 13) DLNA Relay",
+				aesKey:      relayKeyForMedia(target),
+			}
+			address, err := registerRelayStream(relay)
+			if err != nil {
+				return nil, fmt.Errorf("投屏中继不可用: %w", err)
+			}
+			input.MediaURL = address
+		}
+	} else if err := nativeAuthorizeInput(input); err != nil {
 		return nil, err
 	}
 	if device.ControlURL == "" {
@@ -366,4 +368,20 @@ func NewCastDescriptionServerForTest(t interface {
 	server.URL = "http://" + ln.Addr().String()
 	server.Close = func() { _ = httpServer.Close() }
 	return server
+}
+
+// castBlockReason 电视无法直拉时的原因（空串=可直投）。返回非空即转本机中继：
+// DLNA 只推裸 URL，带 AES-128 Key 的流电视解不了码、需 Referer 的源站拒电视裸拉。
+func castBlockReason(media []providerMedia) string {
+	for _, option := range media {
+		if len(option.CENCKey) > 0 || len(option.HLSKey) > 0 {
+			return "本视频为加密流，电视无法解码，暂不支持投屏"
+		}
+	}
+	for _, option := range media {
+		if option.Referer != "" {
+			return "本站源要求来源校验，电视直连会被拒绝，暂不支持投屏"
+		}
+	}
+	return ""
 }

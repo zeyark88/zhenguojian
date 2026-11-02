@@ -497,11 +497,24 @@ class _VerticalFeedScreenState extends State<VerticalFeedScreen>
     required bool more,
     bool force = false,
   }) async {
+    // 红果只要在源集合中就走推荐流（0.8.1 修复：多源模式下原先被降级成
+    // 目录翻页，首页内容与单源版不一致）；其余源走 feedCatalog 合并。
     if (sources.length == 1 && sources.first.id == 'hongguo') {
       return _fetchHongguo(more: more, force: force);
     }
-    final results = await Future.wait(
-      sources.map((source) async {
+    final others =
+        sources.where((source) => source.id != 'hongguo').toList();
+    final results = await Future.wait(<Future<Object?>>[
+      if (sources.any((source) => source.id == 'hongguo'))
+        () async {
+          if (_closed) return null;
+          try {
+            return await _fetchHongguo(more: more, force: force);
+          } catch (error) {
+            return _SourceFeedFailure('红果：$error');
+          }
+        }(),
+      ...others.map((source) async {
         if (_closed) return null;
         try {
           return await widget.repository.feedCatalog(
@@ -513,13 +526,23 @@ class _VerticalFeedScreenState extends State<VerticalFeedScreen>
           return _SourceFeedFailure('${source.name}：$error');
         }
       }),
-    );
+    ]);
     final rows = <List<Drama>>[];
     final warnings = <String>[];
     var hasMore = false;
     for (final result in results) {
       if (result is _SourceFeedFailure) {
         warnings.add(result.message);
+        continue;
+      }
+      if (result is _FeedBatch) {
+        rows.add(
+          result.items
+              .where((drama) => widget.store.allowsSource(drama.source))
+              .toList(),
+        );
+        hasMore = hasMore || result.hasMore;
+        if (result.warning.isNotEmpty) warnings.add(result.warning);
         continue;
       }
       if (result is! CatalogPage) continue;
@@ -3040,11 +3063,16 @@ class _FeedPageState extends State<_FeedPage> with WidgetsBindingObserver {
       _episodeIndex = index;
       _danmaku?.setPlan(plan);
       _syncDanmaku(discontinuity: true);
-      // 投屏中：换集自动续投到同一设备。
+      // 投屏中：换集自动续投到同一设备；续投失败时明确提示两端已脱节，
+      // 并断开投屏状态（电视可能停在上集，用户需手动重投或本机播）。
       final castTarget = _cast?.target;
       if (castTarget != null && _cast?.castingTo != null && !plan.local && plan.url.isNotEmpty) {
         final title = _detail?.drama.title ?? widget.drama.title;
-        unawaited(_cast!.continueCast(plan, title));
+        unawaited(_cast!.continueCast(plan, title).then((ok) {
+          if (!ok && mounted && !_closed) {
+            _toast('换集投屏失败，已断开投屏');
+          }
+        }));
       }
       // 详情就绪后上报，让父级知道本页还能否切下一集（决定滑动语义）。
       _reportEpisodeState();
@@ -3432,6 +3460,9 @@ class _FeedPageState extends State<_FeedPage> with WidgetsBindingObserver {
       _toast('本视频不支持投屏');
       return;
     }
+    // 加密流（红果）与带 Referer 的源：Go 侧会自动转「本机中继」再投
+    // （电视拉手机，手机补头/解密后回源），无需在此拦截。
+    // 本地下载/无地址的才直接提示。
     final device = await showCastSheet(context, cast);
     if (device == null || !mounted || _closed) return;
     final title = _detail?.drama.title ?? widget.drama.title;
