@@ -170,6 +170,7 @@ Flutter 多端独立短剧应用（原名“短剧库 APP”）。站源请求�
 
 - [Topkill](https://github.com/Topkill) —— guoapp3 原作者
 - [kuoluoss](https://github.com/kuoluoss)（软萌小正太）—— zhenguojian 上游维护者
+- [ch6vip/fqapp](https://github.com/ch6vip/fqapp)（什锦铺）—— v0.8.0 红果真签名能力来源：本仓 `native/core/fqsign`（SM3 / Simon / x-ladon / x-argus）移植自该项目的签名实现，并通过其公开黄金向量逐字节验证；红果播放风控问题的解决直接受益于它的开源探索
 - 所有上游依赖的开源项目与库
 
 ## 八、版本历史（上游）
