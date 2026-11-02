@@ -20,6 +20,8 @@ import 'local_store.dart';
 import 'models.dart';
 import 'network_state.dart';
 import 'playback_preferences.dart';
+import 'cast_controller.dart';
+import 'cast_sheet.dart';
 import 'danmaku_controller.dart';
 import 'danmaku_overlay.dart';
 import 'playback_preloader.dart';
@@ -1442,6 +1444,8 @@ class _FeedPageState extends State<_FeedPage> with WidgetsBindingObserver {
   VideoController? _video;
   DanmakuController? _danmaku;
   bool _danmakuEnabled = true;
+  CastController? _cast;
+  String _castToast = '';
   PlayerInteractions? _interactions;
   final _subscriptions = <StreamSubscription<dynamic>>[];
   DramaDetail? _detail;
@@ -1675,6 +1679,8 @@ class _FeedPageState extends State<_FeedPage> with WidgetsBindingObserver {
     _quality = preferences.quality;
     _danmakuEnabled = preferences.danmaku;
     _danmaku = DanmakuController(widget.repository)..setEnabled(_danmakuEnabled);
+    _cast = CastController(widget.repository);
+    _cast!.addListener(_onCastChanged);
     // 单剧模式（0.2.29）：从指定集开始播放（详情页/下载页点的是第几集）。
     _episodeIndex = widget.initialEpisodeIndex;
     _pendingStart = widget.initialPosition;
@@ -2424,6 +2430,9 @@ class _FeedPageState extends State<_FeedPage> with WidgetsBindingObserver {
     _closed = true;
     _danmaku?.dispose();
     _danmaku = null;
+    _cast?.removeListener(_onCastChanged);
+    _cast?.dispose();
+    _cast = null;
     // 0.7.5：进度预览与亮度通知器释放（两者都由本页 State 持有）。
     _seekPreview.dispose();
     // 局域网推送（0.6.4）：注销本页的"正在播放"注册，并回报接收端已退出。
@@ -3031,6 +3040,12 @@ class _FeedPageState extends State<_FeedPage> with WidgetsBindingObserver {
       _episodeIndex = index;
       _danmaku?.setPlan(plan);
       _syncDanmaku(discontinuity: true);
+      // 投屏中：换集自动续投到同一设备。
+      final castTarget = _cast?.target;
+      if (castTarget != null && _cast?.castingTo != null && !plan.local && plan.url.isNotEmpty) {
+        final title = _detail?.drama.title ?? widget.drama.title;
+        unawaited(_cast!.continueCast(plan, title));
+      }
       // 详情就绪后上报，让父级知道本页还能否切下一集（决定滑动语义）。
       _reportEpisodeState();
       // 续播位置（0.2.29）：只有首次打开、且传入了非零位置时才生效；
@@ -3395,6 +3410,38 @@ class _FeedPageState extends State<_FeedPage> with WidgetsBindingObserver {
           widget.store.allowsSource('hongguo'),
       discontinuity: discontinuity,
     );
+  }
+
+  void _onCastChanged() {
+    final name = _cast?.castingTo;
+    if (name != null && _castToast != name) {
+      _castToast = name;
+      _toast('已投屏到 $name，本机已停止播放');
+    } else if (name == null && _castToast.isNotEmpty) {
+      _castToast = '';
+      if (mounted && !_closed) _toast('已停止投屏');
+    }
+    if (mounted && !_closed) setState(() {});
+  }
+
+  Future<void> _openCastSheet() async {
+    final cast = _cast;
+    final plan = _plan;
+    if (cast == null) return;
+    if (plan == null || plan.local || plan.url.isEmpty) {
+      _toast('本视频不支持投屏');
+      return;
+    }
+    final device = await showCastSheet(context, cast);
+    if (device == null || !mounted || _closed) return;
+    final title = _detail?.drama.title ?? widget.drama.title;
+    final ok = await cast.start(device, plan, title);
+    if (ok) {
+      // 投屏成功：本机停止播放，电视接管。
+      await _player?.pause();
+      _controlsVisible = true;
+      if (mounted && !_closed) setState(() {});
+    }
   }
 
   Future<void> _toggleDanmaku() async {
@@ -4539,6 +4586,23 @@ class _FeedPageState extends State<_FeedPage> with WidgetsBindingObserver {
                                                 : Colors.white,
                                             onPressed: _toggleDanmaku,
                                           ),
+                                          _sideButton(
+                                            key: const ValueKey(
+                                              'fullscreen-cast',
+                                            ),
+                                            icon: Icons.cast_rounded,
+                                            label: _cast?.castingTo != null ? '投屏中' : '投屏',
+                                            color: _cast?.castingTo != null
+                                                ? const Color(0xFFFF765F)
+                                                : Colors.white,
+                                            onPressed: () {
+                                              if (_cast?.castingTo != null) {
+                                                _cast?.stop();
+                                                return;
+                                              }
+                                              _openCastSheet();
+                                            },
+                                          ),
                                           if (!widget.singleDrama)
                                             _sideButton(
                                               key: const ValueKey(
@@ -5081,6 +5145,21 @@ class _FeedPageState extends State<_FeedPage> with WidgetsBindingObserver {
                                         ? const Color(0xFFFF765F)
                                         : Colors.white,
                                     onPressed: _toggleDanmaku,
+                                  ),
+                                  _sideButton(
+                                    key: const ValueKey('feed-cast'),
+                                    icon: Icons.cast_rounded,
+                                    label: _cast?.castingTo != null ? '投屏中' : '投屏',
+                                    color: _cast?.castingTo != null
+                                        ? const Color(0xFFFF765F)
+                                        : Colors.white,
+                                    onPressed: () {
+                                      if (_cast?.castingTo != null) {
+                                        _cast?.stop();
+                                        return;
+                                      }
+                                      _openCastSheet();
+                                    },
                                   ),
                                   if (!widget.singleDrama)
                                     _sideButton(

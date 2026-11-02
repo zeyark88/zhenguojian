@@ -8,7 +8,15 @@ var errNativeBuildSource = errors.New("当前版本不包含此站源")
 
 func nativeSourceAvailable(source string) bool {
 	source = canonicalProviderSource(source)
-	return source == sourceHongguo || buildAllSources == "true" && isHuangguoProviderSource(source)
+	if buildAllSources == "true" {
+		return isHuangguoProviderSource(source)
+	}
+	// 默认版：红果 + 韩小圈 + 鬼片 + 青空（常用四源直显，与 Dart primaryValues 一致）。
+	switch source {
+	case sourceHongguo, sourceHanxiaoquan, sourceGuipian, sourceSorani:
+		return true
+	}
+	return false
 }
 
 func nativeDramaAvailable(drama nativeDrama) bool {
@@ -37,6 +45,13 @@ func nativeDownloadAvailable(job nativeDownloadJob) bool {
 
 func nativeAuthorizeInput(input nativeInput) error {
 	switch input.Action {
+	case "castDiscover":
+		// 局域网设备发现，不涉及站源内容。
+	case "castStart":
+		// 投屏的媒体需能被本机播放授权（沿用 prepareHandoff 全套校验）。
+		if !nativeDramaAvailable(input.Drama) || !nativeChapterAvailable(input.Drama, input.Chapter) {
+			return errNativeBuildSource
+		}
 	case "recommendations", "cachedRecommendations", "suggestions", "danmaku":
 		if !nativeSourceAvailable(sourceHongguo) {
 			return errNativeBuildSource

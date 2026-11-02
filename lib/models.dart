@@ -46,7 +46,10 @@ class SourceSite {
   ];
   static const knownValues = [...primaryValues, ...restrictedValues];
   static const allValues = [...primaryValues, ...restrictedValues];
-  static const values = allSourcesEnabled ? knownValues : [hongguo];
+  /// 构建期可选源：
+  /// - 默认版（红果鉴）：红果 + 韩小圈 + 鬼片 + 青空（常用四源直显）；
+  /// - 全站源版（真果鉴 --all-sources）：全部源，其余敏感源经站源密码锁显示。
+  static const values = allSourcesEnabled ? knownValues : primaryValues;
   static bool isAvailable(String id) => values.any((site) => site.id == id);
   static bool isKnown(String id) => allValues.any((site) => site.id == id);
   static bool isPrimary(String id) => primaryValues.any((site) => site.id == id);

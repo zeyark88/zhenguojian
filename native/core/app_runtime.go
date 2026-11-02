@@ -100,6 +100,9 @@ type nativeInput struct {
 	Settings         nativeResourceSettings  `json:"settings"`
 	JobIDs           []string                `json:"jobIds"`
 	PlaybackSession  string                  `json:"playbackSession"`
+	CastTarget       json.RawMessage         `json:"castTarget"`
+	MediaURL         string                  `json:"mediaUrl"`
+	CastTitle        string                  `json:"castTitle"`
 	StartMS          int64                   `json:"startMs"`
 	DurationMS       int64                   `json:"durationMs"`
 	Board            string                  `json:"board"`
@@ -373,6 +376,10 @@ func nativeDispatch(input nativeInput) (any, error) {
 		duration = 10 * time.Minute
 	} else if input.Action == "danmaku" {
 		duration = 10 * time.Second
+	} else if input.Action == "castDiscover" {
+		duration = 15 * time.Second
+	} else if input.Action == "castStart" {
+		duration = 30 * time.Second
 	} else if input.Action == "preload" {
 		duration = 15 * time.Second
 	}
@@ -403,6 +410,10 @@ func nativeDispatch(input nativeInput) (any, error) {
 		return engine.nativeResolve(ctx, input)
 	case "danmaku":
 		return engine.nativeDanmaku(ctx, input)
+	case "castDiscover":
+		return engine.nativeCastDiscover(ctx)
+	case "castStart":
+		return engine.nativeCastStart(ctx, input)
 	case "cancelRead":
 		engine.cancelRead(input)
 		return true, nil

@@ -39,7 +39,12 @@ void main() {
               'huangguoai',
               'cloudfront',
             ]
-          : ['hongguo'],
+          : [
+              'hongguo',
+              'hanxiaoquan',
+              'guipian',
+              'sorani',
+            ],
     );
     expect(store.allowsSource('huangdou'), allSourcesEnabled);
     expect(store.allowsSource('hongguo'), isTrue);
@@ -53,11 +58,11 @@ void main() {
     await store.enableSourceGate('666');
     expect(store.sourceGateEnabled, isTrue);
     expect(store.sourcesUnlocked, isTrue);
-    expect(store.sources.length, allSourcesEnabled ? 11 : 1);
+    expect(store.sources.length, allSourcesEnabled ? 11 : 4);
 
     store.lockSources();
     expect(store.sourcesUnlocked, isFalse);
-    expect(store.sources.length, allSourcesEnabled ? 11 : 1);
+    expect(store.sources.length, allSourcesEnabled ? 11 : 4);
     expect(store.allowsSource('huangdou'), allSourcesEnabled);
     expect(store.allowsSource('hongguo'), isTrue);
     if (allSourcesEnabled) expect(store.allowsSource('sorani'), isTrue);
@@ -66,7 +71,7 @@ void main() {
     expect(store.sourcesUnlocked, isFalse);
     await store.unlockSources('666');
     expect(store.sourcesUnlocked, isTrue);
-    expect(store.sources.length, allSourcesEnabled ? 11 : 1);
+    expect(store.sources.length, allSourcesEnabled ? 11 : 4);
   });
 
   test('a saved gate keeps its lock state after restart', () async {
@@ -77,7 +82,7 @@ void main() {
     addTearDown(restarted.dispose);
     expect(restarted.sourceGateEnabled, isTrue);
     expect(restarted.sourcesUnlocked, isFalse);
-    expect(restarted.sources.length, allSourcesEnabled ? 11 : 1);
+    expect(restarted.sources.length, allSourcesEnabled ? 11 : 4);
     await restarted.unlockSources('666');
     expect(restarted.sourcesUnlocked, isTrue);
   });
@@ -89,7 +94,7 @@ void main() {
     await store.disableSourceGate();
     expect(store.sourceGateEnabled, isFalse);
     expect(store.sourcesUnlocked, isTrue);
-    expect(store.sources.length, allSourcesEnabled ? 11 : 1);
+    expect(store.sources.length, allSourcesEnabled ? 11 : 4);
   });
 
   test('an invalid pin must be 3 to 12 digits', () async {
@@ -131,7 +136,7 @@ void main() {
     expect(store.configurationError, isNull);
     expect(store.sourceGateEnabled, isFalse);
     expect(store.sourcesUnlocked, isFalse);
-    expect(store.sources.length, allSourcesEnabled ? 11 : 1);
+    expect(store.sources.length, allSourcesEnabled ? 11 : 4);
   });
 
   test('a user-disabled gate keeps every compiled source visible', () async {
@@ -141,7 +146,7 @@ void main() {
     });
     expect(store.sourceGateEnabled, isFalse);
     expect(store.sourcesUnlocked, isTrue);
-    expect(store.sources.length, allSourcesEnabled ? 11 : 1);
+    expect(store.sources.length, allSourcesEnabled ? 11 : 4);
   });
 
   // 密码锁弹窗含动画与异步回调，用固定步进代替 pumpAndSettle，

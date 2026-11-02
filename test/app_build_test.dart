@@ -28,7 +28,7 @@ void main() {
       expect(find.text(allSourcesEnabled ? '真果鉴' : '红果鉴'), findsOneWidget);
       expect(appSlug, allSourcesEnabled ? 'zhenguojian' : 'hongguojian');
       expect(repository.requests, [allSourcesEnabled ? 'huangdou' : 'hongguo']);
-      expect(store.sources.length, allSourcesEnabled ? 5 : 1);
+      expect(store.sources.length, allSourcesEnabled ? 11 : 4);
       for (final source in SourceSite.knownValues.skip(1)) {
         expect(
           find.text(source.name),

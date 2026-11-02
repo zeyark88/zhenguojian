@@ -14,6 +14,7 @@ import 'local_store.dart';
 import 'app_build.dart';
 import 'source_status.dart';
 import 'ranking_models.dart';
+import 'cast_controller.dart';
 import 'danmaku_models.dart';
 import 'cover_decoder.dart';
 import 'catalog_updates.dart';
@@ -119,6 +120,9 @@ abstract class AppRepository {
     required int startMs,
     required int durationMs,
   }) async => throw AppFailure('当前环境不支持弹幕');
+  Future<List<CastDevice>> castDiscover() async => throw AppFailure('当前环境不支持投屏');
+  Future<void> castStart(CastDevice device, PlaybackPlan plan, String title) async =>
+      throw AppFailure('当前环境不支持投屏');
 
   /// 首页视频流专用的目录读取。
   ///
@@ -361,6 +365,31 @@ class NativeRepository extends AppRepository {
   Future<void> cancelRecommendations() => _cancelReads('recommendations-');
   @override
   Future<void> cancelDanmaku() => _cancelReads('danmaku');
+
+  @override
+  Future<List<CastDevice>> castDiscover() async {
+    final data = await _call({'action': 'castDiscover'});
+    final items = data['items'];
+    if (items is! List) return [];
+    return items
+        .map((row) => CastDevice.fromJson(Map<String, dynamic>.from(row as Map)))
+        .toList();
+  }
+
+  @override
+  Future<void> castStart(CastDevice device, PlaybackPlan plan, String title) async {
+    if (plan.local || plan.url.isEmpty) {
+      throw AppFailure('本视频不支持投屏');
+    }
+    // 复用该媒体的播放授权（红果等源要求已可播才允许取流投屏）。
+    await _call({
+      'action': 'castStart',
+      'playbackSession': plan.session,
+      'castTarget': device.toJson(),
+      'mediaUrl': plan.url,
+      'castTitle': title,
+    });
+  }
 
   @override
   Future<DanmakuPage> danmaku(
