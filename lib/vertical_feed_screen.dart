@@ -29,6 +29,7 @@ import 'playback_recovery.dart';
 import 'player_interactions.dart';
 import 'system_volume.dart';
 import 'screen_brightness.dart';
+import 'remote_widgets.dart';
 import 'widgets.dart';
 
 /// 全屏横屏分区手势的类型（0.7.2，`XQ-0105`）。
@@ -3911,8 +3912,6 @@ class _FeedPageState extends State<_FeedPage> with WidgetsBindingObserver {
   /// 浅色主题下 `ListTile` 的 textColor/iconColor/tileColor 会从主题解析，
   /// 只包 DefaultTextStyle 会被覆盖，导致深色底配深色字看不清。
   Widget _sheetShell({required String title, required Widget child, Key? key}) {
-    const background = Color(0xFF191A20);
-    const foreground = Colors.white;
     // 0.9.5（TV）：bottom sheet 打开时不会自动聚焦任何子项。选集弹窗
     // 由 _episodeSheetGrid 自行聚焦当前集；关闭按钮显式挂 FocusNode
     //（IconButton 焦点可达），倍速/清晰度 chip 依靠自身 InkWell 焦点
@@ -4161,60 +4160,26 @@ class _FeedPageState extends State<_FeedPage> with WidgetsBindingObserver {
     final episodes = detail.episodes;
     final columns = _episodeGridColumns;
     // 让网格滚动到当前集附近（网格高度固定，先按行号估算偏移）。
+    // 0.9.7：网格改由 RemoteGrid 构成（itemExtent 52 + spacing 10 +
+    // padding.top 16），行高由 76 对齐为 62，公式与 RemoteGrid
+    // 内部 _focusAt 一致。手机端不自动聚焦，初始定位只能靠这里。
     final gridController = ScrollController();
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (!gridController.hasClients) return;
       final row = currentIndex ~/ columns;
-      const rowExtent = 76.0;
-      final target = (row * rowExtent - rowExtent).clamp(
+      final top = 16.0 + row * 62.0;
+      final target = (top - 62.0).clamp(
         0.0,
         gridController.position.maxScrollExtent,
       );
       gridController.jumpTo(target);
     });
-    // 0.9.5（TV）：TV 布局下打开弹窗后自动聚焦当前集，遥控才能
-    // 用方向键在集数间移动、OK 选中。普通 InkWell 无 autofocus 时
-    // bottom sheet 路由不会聚焦任何子项，遥控上下左右全部无响应。
-    // 同时用显式网格导航（index ± columns）——GridView 默认方向遍历
-    // 对跨行移动不可靠（几何近邻 + 惰性构建），与详情页 RemoteGrid 同款手法。
+    // 0.9.7（TV）：不再手动造 FocusNode + 多帧重试 requestFocus——
+    // 0.9.5/0.9.6 两轮在真机上层反复失败（用户看到的橙色只是 selected
+    // 底色，焦点从未落上）。改为弹窗网格直接复用详情页选集的 RemoteGrid
+    //（autofocus 聚焦当前集，内部自带挂树时序处理与滚动跟随），
+    // 该组件在真机上从未出过焦点问题。
     final television = AppLayout.isTelevision(context);
-    final sheetNodes = {
-      for (var i = 0; i < episodes.length; i++) i: FocusNode(debugLabel: 'feed-episode-$i'),
-    };
-    // 0.9.6（TV）：真机帧序与测试不同——sheet 首帧时目标集的 InkWell
-    // 可能尚未构建（GridView 惰性），requestFocus 对无 context 节点
-    // **静默失败**，之后网格内无任何焦点节点，方向键全部无响应
-    // （此前用户看到的橙色只是 selected 底色，不是焦点）。
-    // 改为多帧重试（滚动已先 jumpTo 到当前集附近，重试几帧内必可见），
-    // 全部失败时兜底聚焦关闭按钮，保证弹窗里永远有焦点可操作。
-    if (television) {
-      var attempts = 0;
-      void focusCurrent() {
-        if (!mounted || _closed) return;
-        final node = sheetNodes[currentIndex];
-        if (node != null && node.context != null) {
-          node.requestFocus();
-          return;
-        }
-        if (attempts++ < 8) {
-          WidgetsBinding.instance.addPostFrameCallback((_) => focusCurrent());
-        } else {
-          _sheetCloseNode.requestFocus();
-        }
-      }
-      for (var frame = 0; frame < 3; frame++) {
-        WidgetsBinding.instance.addPostFrameCallback(
-          frame == 0 ? (_) => focusCurrent() : (_) {
-            // 第二、三帧兜底：若首帧聚焦过但被系统重置，重新补焦。
-            if (mounted &&
-                !_closed &&
-                FocusManager.instance.primaryFocus == null) {
-              focusCurrent();
-            }
-          },
-        );
-      }
-    }
     final value = await showModalBottomSheet<int>(
       context: context,
       useRootNavigator: _sheetUsesRootNavigator,
@@ -4230,80 +4195,54 @@ class _FeedPageState extends State<_FeedPage> with WidgetsBindingObserver {
           controller: gridController,
           currentIndex: currentIndex,
           television: television,
-          nodes: sheetNodes,
         ),
       ),
     );
     gridController.dispose();
-    for (final node in sheetNodes.values) {
-      node.dispose();
-    }
     if (value != null && mounted) await _playEpisode(value);
   });
 
-  /// 0.9.5（TV）：选集弹窗网格。TV 布局下每个集数块挂独立 FocusNode、
-  /// 打开时聚焦当前集、方向键经 [_episodeSheetGrid] 外层 Focus 做显式
-  /// index±columns 导航，聚焦行自动滚入视野；非 TV 保持原触屏网格不变。
+  /// 0.9.7（TV）：选集弹窗网格。
+  ///
+  /// **推倒重来的原因**：0.9.5/0.9.6 用 InkWell+FocusNode+requestFocus 的
+  /// 组合在真机上反复失败（测试全绿、真机焦点始终落不上——橙色只是
+  /// selected 底色不是焦点框）。不再与 InkWell 的焦点机制纠缠，改为
+  /// **复用详情页选集网格的同款组件**（RemoteGrid + RemoteTarget）：
+  /// 那套组件在真机上从未出过焦点问题（用户从没反馈详情页选集聚焦失败），
+  /// 自带 index±columns 显式方向导航、滚动跟随、清晰焦点边框。
+  ///
+  /// TV 与手机统一走 RemoteGrid（其 itemBuilder 外观与 0.2.31 以来
+  /// 的数字网格保持一致）；autoplay 后回焦由 RemoteGrid 自管理。
   Widget _episodeSheetGrid({
     required List<Episode> episodes,
     required int columns,
     required ScrollController controller,
     required int currentIndex,
     required bool television,
-    required Map<int, FocusNode> nodes,
   }) {
-    Widget grid = GridView.builder(
+    const accent = Color(0xFFFF765F);
+    return RemoteGrid(
+      key: const ValueKey('episode-sheet-grid'),
       controller: controller,
+      // TV：作为弹窗网格自动聚焦当前集（RemoteGrid 内部处理挂树时序与
+      // 滚动跟随）；手机上不抢焦点，维持纯触屏。
+      autofocus: television,
+      initialIndex: currentIndex,
+      itemKeys: [for (var i = 0; i < episodes.length; i++) '$i'],
+      columns: columns,
+      itemExtent: 52,
+      spacing: 10,
       padding: const EdgeInsets.fromLTRB(16, 16, 16, 20),
-      gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
-        crossAxisCount: columns,
-        mainAxisSpacing: 10,
-        crossAxisSpacing: 10,
-        childAspectRatio: 1.5,
-      ),
-      itemCount: episodes.length,
-      itemBuilder: (context, index) {
+      itemBuilder: (context, index, focusNode, onFocus) {
         final selected = index == _episodeIndex;
-        const accent = Color(0xFFFF765F);
-        return InkWell(
-          key: ValueKey('episode-$index'),
-          focusNode: television ? nodes[index] : null,
-          // 0.9.6（TV）：焦点高亮显式画边框——sheet 的 Theme 覆盖下
-          // InkWell 默认 focusColor 不可见，真机上焦点落上也看不出。
-          focusColor: const Color(0x33FFFFFF),
-          // 0.9.6（TV）：当前集作为路由首个可聚焦子项自动获焦
-          //（打开瞬间的 postFrame 重试是兜底，autofocus 是正路）。
-          autofocus: television && index == currentIndex,
-          // TV：聚焦行滚入视野（GridView + 手动焦点不会自动 ensureVisible）。
-          onFocusChange: television
-              ? (focused) {
-                  if (!focused) return;
-                  WidgetsBinding.instance.addPostFrameCallback((_) {
-                    if (!controller.hasClients) return;
-                    final row = index ~/ columns;
-                    const rowExtent = 86.0;
-                    final top = (row * rowExtent - rowExtent).clamp(
-                      0.0,
-                      controller.position.maxScrollExtent,
-                    );
-                    final bottom = (top + rowExtent * 3).clamp(
-                      0.0,
-                      controller.position.maxScrollExtent,
-                    );
-                    if (controller.offset > top) {
-                      controller.jumpTo(top);
-                    } else if (controller.offset <
-                        bottom - controller.position.viewportDimension) {
-                      controller.jumpTo(
-                        bottom - controller.position.viewportDimension,
-                      );
-                    }
-                  });
-                }
-              : null,
-          onTap: () => Navigator.pop(context, index),
-          borderRadius: BorderRadius.circular(10),
+        return RemoteTarget(
+          focusNode: focusNode,
+          onFocus: onFocus,
+          onPressed: () => Navigator.pop(context, index),
+          selected: selected,
+          label: '第 ${episodes[index].number} 集',
           child: Container(
+            margin: const EdgeInsets.symmetric(horizontal: 2, vertical: 4),
             alignment: Alignment.center,
             decoration: BoxDecoration(
               color: selected ? accent : const Color(0xFF26272F),
@@ -4326,59 +4265,6 @@ class _FeedPageState extends State<_FeedPage> with WidgetsBindingObserver {
           ),
         );
       },
-    );
-    if (!television) {
-      return SizedBox(
-        height: MediaQuery.sizeOf(context).height * .6,
-        child: grid,
-      );
-    }
-    return Focus(
-      // 显式网格方向导航：按 index 增减 columns 移动，越过边界放行
-      // （如第一行按「上」交回系统，让 barrier/关闭按钮可达）。
-      onKeyEvent: (node, event) {
-        if (event is! KeyDownEvent && event is! KeyRepeatEvent) {
-          return KeyEventResult.ignored;
-        }
-        final key = event.logicalKey;
-        final focusedLabel =
-            FocusManager.instance.primaryFocus?.debugLabel ?? '';
-        if (!focusedLabel.startsWith('feed-episode-')) {
-          // 0.9.6：网格内当前没有焦点（聚焦重试全失败的极端情况）——
-          // 方向键进来时直接把焦点放到当前集起步，而不是放行丢失。
-          if (key == LogicalKeyboardKey.arrowDown ||
-              key == LogicalKeyboardKey.arrowUp ||
-              key == LogicalKeyboardKey.arrowRight ||
-              key == LogicalKeyboardKey.arrowLeft) {
-            nodes[currentIndex]?.requestFocus();
-            return KeyEventResult.handled;
-          }
-          return KeyEventResult.ignored;
-        }
-        final current = int.tryParse(
-          focusedLabel.replaceFirst('feed-episode-', ''),
-        );
-        if (current == null) return KeyEventResult.ignored;
-        int? next;
-        if (key == LogicalKeyboardKey.arrowDown) {
-          if (current + columns < episodes.length) next = current + columns;
-        } else if (key == LogicalKeyboardKey.arrowUp) {
-          if (current - columns >= 0) next = current - columns;
-        } else if (key == LogicalKeyboardKey.arrowRight) {
-          if (current + 1 < episodes.length) next = current + 1;
-        } else if (key == LogicalKeyboardKey.arrowLeft) {
-          if (current - 1 >= 0) next = current - 1;
-        }
-        if (next != null) {
-          nodes[next]?.requestFocus();
-          return KeyEventResult.handled;
-        }
-        return KeyEventResult.ignored;
-      },
-      child: SizedBox(
-        height: MediaQuery.sizeOf(context).height * .6,
-        child: grid,
-      ),
     );
   }
 

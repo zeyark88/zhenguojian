@@ -37,6 +37,21 @@ class _AsyncDetailRepository extends FixtureRepository {
   }
 }
 
+/// 选集弹窗用例需要可跨行的多集数据：RouteRepository 继承的
+/// FixtureRepository.detail 只有 2 集，5 列网格里全在第 0 行，
+// «下键跨行移动»永远无从验证（0.9.5/0.9.6 的旧断言只要求焦点
+// 换个地方，下键把焦点甩出网格外也能蒙混过关）。
+class _WideRouteRepository extends RouteRepository {
+  @override
+  Future<DramaDetail> detail(Drama drama) async => DramaDetail(
+        drama,
+        List.generate(
+          60,
+          (index) => Episode({'id': '${index + 1}'}, index + 1),
+        ),
+      );
+}
+
 Widget _tvHost(Widget child) => MaterialApp(
   theme: ThemeData.dark(),
   builder: (_, navigatorChild) =>
@@ -194,14 +209,14 @@ void main() {
     expect(tester.takeException(), isNull);
   });
 
-  testWidgets('TV：选集弹窗打开后焦点落在当前集，方向键可在集数间移动（0.9.5）', (tester) async {
+  testWidgets('TV：选集弹窗打开后焦点落在当前集（RemoteGrid），方向键可移动（0.9.7）', (tester) async {
     tester.view.devicePixelRatio = 1;
     tester.view.physicalSize = const Size(420, 880);
     addTearDown(tester.view.resetDevicePixelRatio);
     addTearDown(tester.view.resetPhysicalSize);
 
     final store = await makeStore();
-    final repository = RouteRepository();
+    final repository = _WideRouteRepository();
     final player = ScriptedPlayer();
     await tester.pumpWidget(
       _tvHost(
@@ -255,11 +270,13 @@ void main() {
     await tester.pumpAndSettle();
 
     // 弹窗已打开：当前集（第 1 集）应持有焦点。
+    // 0.9.7：弹窗网格复用详情页 RemoteGrid，焦点节点的 debugLabel
+    // 为 remote-{index}（与 0.9.5/0.9.6 手造的 feed-episode-{i} 不同）。
     expect(find.textContaining('选集'), findsWidgets);
     final focusedLabel =
         FocusManager.instance.primaryFocus?.debugLabel ?? '';
     expect(
-      RegExp(r'^feed-episode-\d+$').hasMatch(focusedLabel),
+      RegExp(r'^remote-\d+$').hasMatch(focusedLabel),
       isTrue,
       reason: 'TV 上选集弹窗打开后，焦点应自动落在当前集按钮，实际：$focusedLabel',
     );
@@ -269,16 +286,16 @@ void main() {
     await tester.pump(const Duration(milliseconds: 150));
     expect(
       FocusManager.instance.primaryFocus?.debugLabel,
-      'feed-episode-1',
+      'remote-1',
       reason: '右键应把焦点从第 1 集移到第 2 集',
     );
 
-    // 下键：焦点移动到下一行（第 1 + columns 集）。
+    // 下键：焦点跨行移动到下一行同列（420 逻辑宽 → 5 列，1 + 5 = 6）。
     await press(tester, LogicalKeyboardKey.arrowDown);
     await tester.pump(const Duration(milliseconds: 150));
     expect(
       FocusManager.instance.primaryFocus?.debugLabel,
-      isNot('feed-episode-1'),
+      'remote-6',
       reason: '下键应在网格内跨行移动焦点',
     );
     expect(tester.takeException(), isNull);
