@@ -443,6 +443,17 @@ class LocalStore extends ChangeNotifier {
     });
   }
 
+  /// 当前生效的站源集合：多选时取多选结果，否则取当前单一站源。
+  ///
+  /// 用于把「最近观看」等记录按当前站源过滤（借鉴上游 0.9.0，GitHub 议题 #13）。
+  Set<String> get activeSourceIds {
+    if (locked) return const {};
+    final multi = multiSources;
+    if (multi.isNotEmpty) return multi.toSet();
+    final single = source;
+    return single.isEmpty ? const {} : {single};
+  }
+
   Future<void> rememberSearch(String text) {
     final query = text.trim();
     if (query.isEmpty || query.runes.length > 80) return Future.value();
@@ -691,15 +702,38 @@ class LocalStore extends ChangeNotifier {
     });
   }
 
-  Future<void> clearHistory() {
+  /// 清空观看记录。
+  ///
+  /// - 不传 [sources]：清空全部观看记录（原行为）。
+  /// - 传 [sources]（借鉴上游 0.9.0）：只清空指定站源的记录，其它站源保留；
+  ///   「最近观看」页按当前站源过滤展示，清空也只作用于当前站源。
+  Future<void> clearHistory({Set<String>? sources}) {
     final epoch = _epoch;
     return _queue(() async {
       if (locked || epoch != _epoch) return;
-      await _commit(
-        {},
-        remove: [_key('history')],
-        clearSyncProgress: {..._history.keys, ...lanDocument.records.keys},
-      );
+      if (sources == null) {
+        await _commit(
+          {},
+          remove: [_key('history')],
+          clearSyncProgress: {..._history.keys, ...lanDocument.records.keys},
+        );
+      } else {
+        final removed = _history.values
+            .where((entry) => sources.contains(entry.drama.source))
+            .map((entry) => entry.drama.id)
+            .toSet();
+        if (removed.isEmpty) return;
+        final kept = Map.of(_history)
+          ..removeWhere((key, _) => removed.contains(key));
+        await _commit(
+          {
+            _key('history'): jsonEncode(
+              kept.values.map((entry) => entry.toJson()).toList(),
+            ),
+          },
+          clearSyncProgress: removed,
+        );
+      }
       _loadLibrary();
       _notify();
     });

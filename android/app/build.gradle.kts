@@ -14,6 +14,11 @@ val dartDefines = providers.gradleProperty("dart-defines").orNull.orEmpty()
     }
 val allSources = dartDefines["ALL_SOURCES"] == "true"
 
+// 0.9.0（借鉴上游）：两版自动独立包名，无需再手改 gradle：
+// - 真果鉴（--all-sources）：保持主包名 com.duanju.duanju_app，老用户可覆盖安装升级；
+// - 红果鉴（默认）：com.duanju.duanju_app.hongguo，与真果鉴可同时安装、互不冲突。
+val appId = if (allSources) "com.duanju.duanju_app" else "com.duanju.duanju_app.hongguo"
+
 val releaseKey = rootProject.file("key.properties")
 val releaseProperties = Properties()
 if (releaseKey.exists()) {
@@ -31,11 +36,11 @@ android {
     }
 
     defaultConfig {
-        applicationId = "com.duanju.duanju_app"
+        applicationId = appId
         minSdk = 26
         targetSdk = flutter.targetSdkVersion
         versionCode = flutter.versionCode
-        versionName = "0.8.1+84a"
+        versionName = "0.9.0+85a"
         manifestPlaceholders["appLabel"] = if (allSources) "真果鉴" else "红果鉴"
         manifestPlaceholders["appBanner"] = if (allSources) "@drawable/tv_banner_all_sources" else "@drawable/tv_banner"
     }

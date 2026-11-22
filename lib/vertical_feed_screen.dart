@@ -289,12 +289,53 @@ class _VerticalFeedScreenState extends State<VerticalFeedScreen>
 
   /// 当前生效的站源集合。
   List<SourceSite> get _sources {
+    if (_borrowAllSources) {
+      // 首页取流失败后的兜底：临时借用全部已授权源再取一次（借鉴上游 0.7.18/0.9.0）。
+      return widget.store.sources
+          .where((source) => widget.store.allowsSource(source.id))
+          .toList();
+    }
     final list = widget.sources.isNotEmpty
         ? widget.sources
         : widget.store.sources;
     return list
         .where((source) => widget.store.allowsSource(source.id))
         .toList();
+  }
+
+  /// 首页取流失败时，是否已临时借用「已授权但未选中」的站源兜底（借鉴上游）。
+  ///
+  /// 目的：红果等单个源抽风时，首页不应整页空白——只要用户还有其他已授权源，
+  /// 就自动改用全部可用源再取一次，保证首页始终有内容。
+  bool _borrowAllSources = false;
+
+  /// 取流失败/为空时尝试借用其他已授权源；返回 true 表示已触发重载。
+  ///
+  /// 注意：用户**明确只选了一个源/一组源**时不借用。
+  /// 否则「选中蓝果 → 蓝果取不到 → 借来红果」表现为「选蓝果却播红果」，
+  /// 是明确的错误行为（不能让兜底掩盖用户的选择）。
+  bool _tryBorrowSources() {
+    if (_borrowAllSources || widget.singleDrama != null) return false;
+    if (_userPickedSingleGroup) return false;
+    final current = _sources.map((source) => source.id).toSet();
+    final all = widget.store.sources
+        .where((source) => widget.store.allowsSource(source.id))
+        .toList();
+    if (all.length <= current.length) return false;
+    _borrowAllSources = true;
+    _error = null;
+    unawaited(_load(force: true));
+    return true;
+  }
+
+  /// 用户是否明确只选了一个源（非「全部站源」多选）。
+  ///
+  /// 判定：存在明确指定的源列表、且不是多选模式、且未手工开启多源。
+  bool get _userPickedSingleGroup {
+    final multi = widget.store.multiSources;
+    if (multi.length > 1) return false;
+    final picked = widget.sources;
+    return picked.isNotEmpty;
   }
 
   String _signatureOf(List<SourceSite> sources) =>
@@ -387,6 +428,10 @@ class _VerticalFeedScreenState extends State<VerticalFeedScreen>
   void _reset({bool force = false, String? switchTo}) {
     if (_closed) return;
     _generation++;
+    // 切源/换一批时退出「借用全部源」的兜底状态，恢复按用户选择取流；
+    // 下次取流再失败时会重新触发兜底（上游实现未重置该标志，切源后
+    // 会被兜底状态覆盖用户选择，这里修正）。
+    _borrowAllSources = false;
     if (_controller.hasClients) _controller.jumpToPage(0);
     setState(() {
       _items = [];
@@ -453,10 +498,19 @@ class _VerticalFeedScreenState extends State<VerticalFeedScreen>
         _loadingMore = false;
       });
       _stopSwitchTicker();
-      if (_items.isNotEmpty) _reportReady();
+      if (_items.isNotEmpty) {
+        _reportReady();
+      } else if (!more && _tryBorrowSources()) {
+        // 所选源一条都没返回：先借用其他已授权源兜底，避免首页空白。
+        return;
+      }
     } catch (error) {
       if (_closed || generation != _generation) return;
       _stopSwitchTicker();
+      if (!more && _tryBorrowSources()) {
+        // 所选源全部失败：借用其他已授权源再试一次，不让首页整页空白。
+        return;
+      }
       setState(() {
         _loading = false;
         _loadingMore = false;

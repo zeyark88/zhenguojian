@@ -2,7 +2,7 @@
 
 多站源短剧浏览与在线播放应用，Android 手机版。基于开源项目 [Topkill/guoapp3](https://github.com/Topkill/guoapp3) 二次开发与改版。
 
-当前版本：**0.7.16+76** ｜ 平台：Android 8.0+（arm64-v8a） ｜ [下载最新版](https://github.com/kuoluoss/zhenguojian/releases/latest)
+当前版本：**0.9.0+81** ｜ 平台：Android 8.0+（arm64-v8a） ｜ [下载最新版](https://github.com/kuoluoss/zhenguojian/releases/latest)
 
 ---
 
@@ -14,20 +14,19 @@
 - **数据存储**：剧库、追剧、观看历史、下载记录都保存在本机。
 - **账号**：没有云端账号，不需要登录；只有本机用户与权限管理。
 
-## 二、本次更新（0.7.16）
+## 二、本次更新（0.9.0）
 
-- **修复：红果站源整体不可用（首页一直转圈、进不去软件）**
-  - 红果 App 接口改为校验完整签名（六个请求头缺一不可），旧请求一直被服务端静默丢弃；
-  - 现在补全签名，首页推荐、剧集详情、播放取流全部恢复。
-- **修复：首页拉不到内容时卡在开屏页**
-  - 原因：开屏页的超时不再真正放行，必须等首页拿到剧才淡出；
-  - 现在：最多 3 秒一定进入首页，加载慢或失败会直接显示错误与「重试」。
+> ⚠️ **本次换了应用包名，旧版不能覆盖升级：请先用旧版「设置与备份 → 导出备份」保存数据，装好新版后再「恢复备份」。不备份就卸载，追剧/观看记录/下载会丢失。**
 
-上一版 0.7.15：连播本剧切集不再闪上一集最后一帧。更早版本见 [Releases](https://github.com/kuoluoss/zhenguojian/releases)。
+- **重要：三个版本各自独立包名**：红果鉴 `com.hongguojian.app`、真果鉴 `com.zhenguojian.app`、蓝果鉴 `com.languojian.app`；解决与其他同源应用的包名冲突，三个版本可以同时安装。
+- **修复：应用内更新选错安装包**：以前真果鉴 / 蓝果鉴点更新会下到红果鉴，现在只下载与当前版本对应的包。
+- **已知问题**：红果播放仍可能失败（取决于官方是否放行）；蓝果需开 VPN / 代理访问，开启后播放正常。
+
+上一版 0.8.0：三种版本、蓝果源、最近观看按源区分。更早版本见 [Releases](https://github.com/kuoluoss/zhenguojian/releases)。
 
 ## 三、快速开始
 
-1. 从 [Releases](https://github.com/kuoluoss/zhenguojian/releases/latest) 下载 `zhenguojian-<版本>-arm64-v8a.apk`。
+1. 从 [Releases](https://github.com/kuoluoss/zhenguojian/releases/latest) 下载对应版本：`hongguojian-<版本>-arm64-v8a.apk`（仅红果）/ `zhenguojian-<版本>-arm64-v8a.apk`（全部站源）/ `languojian-<版本>-arm64-v8a.apk`（仅蓝果）。三个版本包名各自独立，**可以同时安装**；从旧版（`com.duanju.duanju_app`）升级需先导出备份，装好新版后恢复。
 2. 手机上安装（需允许「安装未知来源应用」）。
 3. 打开即用；之后有新版本时，App 内会提示更新。
 
@@ -88,9 +87,11 @@
 | 黄果剧场 | 原「黄果视频」，域名 `huangguoai.fit`；直连较慢，走代理更快 |
 | 黄果 AI | 多镜像域名；稳定性受站点限流影响 |
 | 黄果旧版 | 直连正常；代理出口 IP 可能触发限流 |
+| 蓝果 | `languo.ai`；标准 HLS，无需签名；**国内需开 VPN / 代理才能访问，开启后播放正常** |
 
 - 站源在「站源管理」里勾选；勾选多个时首页混合随机。
 - **剧类筛选只在只选红果时可用** —— 只有红果提供这套分类，其它源没有对应维度。
+- **三个版本的站源范围不同**：红果鉴仅红果；真果鉴全部 7 个站源（含蓝果）；蓝果鉴仅蓝果。
 
 ## 七、常见问题
 
@@ -132,15 +133,18 @@ A：不需要。没有云端账号；本机用户管理只用于区分不同使�
 环境：Flutter `3.47.4`、Dart `3.12+`、Go `1.24.1+`、Python `3.10+`；Android 需 JDK 17、SDK 36、NDK `28.2.13676358`。
 
 ```sh
-# 全站源版（真果鉴）
-python3 scripts/build_android.py --abi arm64-v8a --all-sources
-# 仅红果版（红果鉴）
-python3 scripts/build_android.py --abi arm64-v8a
+# 红果鉴（仅红果）
+python3 scripts/build_android.py --abi arm64-v8a --edition hongguo
+# 真果鉴（全部站源，含蓝果）
+python3 scripts/build_android.py --abi arm64-v8a --edition all
+# 蓝果鉴（仅蓝果）
+python3 scripts/build_android.py --abi arm64-v8a --edition languo
 ```
 
 - **必须在纯英文路径下构建**（中文路径会导致工具链失败）。
 - 构建时不要设 HTTP 代理；访问 GitHub 时才需要代理。
 - 产物在 `dist/android/`，`SHA256SUMS.txt` 为校验清单。
+- 三个版本包名各自独立（见「快速开始」），**可以同时安装**；旧参数 `--all-sources` 已废弃，请改用 `--edition`。
 
 源码结构：
 
@@ -176,7 +180,11 @@ python3 scripts/build_android.py --abi arm64-v8a
 
 | 版本 | 日期 | 主要变化 |
 | --- | --- | --- |
-| 0.7.16 | 2026-10-23 | 修复红果站源不可用（完整六头签名）、开屏页不再卡住 |
+| 0.9.0 | 2026-11-18 | 三版改独立包名（可共存、解决包名冲突）；修复应用内更新选错安装包 |
+| 0.8.0 | 2026-11-17 | 三种版本（红果鉴/真果鉴/蓝果鉴）；蓝果源；最近观看按源区分；黄豆证书修复；红果播放参数修正 |
+| 0.7.18 | 2026-11-03 | 红果播放签名修正 + 组合自动切换 + 播放地址缓存；参数远程可配；首页多源兜底 |
+| 0.7.17 | 2026-10-31 | 修复红果播放取流（改注册匿名身份 + 无签名，保留签名兜底） |
+| 0.7.16 | 2026-10-22 | 修复红果站源不可用（六头签名）、开屏页不再卡住 |
 | 0.7.15 | 2026-10-19 | 修复切集后闪上一集最后一帧 |
 | 0.7.14 | 2026-10-18 | 连播本剧切集跟手滑动动画（与连播下一部同手感） |
 | 0.7.13 | 2026-10-18 | 修复连播后加载提示常显、预加载提前到开播 3 秒 |
@@ -202,3 +210,5 @@ python3 scripts/build_android.py --abi arm64-v8a
 | 0.6.5 | 2026-10-14 | 更新日志改走 Atom、已看为终态、随机流排除已看 |
 
 更早版本见 [Releases](https://github.com/kuoluoss/zhenguojian/releases)。
+
+> AI生成

@@ -30,7 +30,7 @@ class SourceSite {
   static const hanxiaoquan = SourceSite('hanxiaoquan', '韩小圈', '韩剧 · 韩国电影 · 综艺动漫');
   static const guipian = SourceSite('guipian', '鬼片', '鬼片 · 电视剧 · 动漫');
 
-  /// 默认可见的站源：红果、韩小圈、鬼片网、青空次元。
+  /// 默认可见的站源：红果、韩小圈、鬼片（常用三源直显）。
   static const primaryValues = [hongguo, hanxiaoquan, guipian];
 
   /// 敏感站源：默认隐藏，输入解锁密码后才显示。
@@ -41,12 +41,13 @@ class SourceSite {
     SourceSite('huangguo-video', '黄果剧场', '视频剧集'),
     SourceSite('huangguoai', '黄果 AI', 'AI 短剧'),
     SourceSite('cloudfront', '黄果旧版', '旧 API 剧库'),
+    SourceSite('languo', '蓝果', '蓝果短剧 · 男同短剧 · GV'),
   ];
   static const knownValues = [...primaryValues, ...restrictedValues];
   static const allValues = [...primaryValues, ...restrictedValues];
   /// 构建期可选源：
-  /// - 默认版（红果鉴）：红果 + 韩小圈 + 鬼片 + 青空（常用四源直显）；
-  /// - 全站源版（真果鉴 --all-sources）：全部源，其余敏感源经站源密码锁显示。
+  /// - 默认版（红果鉴）：红果 + 韩小圈 + 鬼片（常用三源直显）；
+  /// - 全站源版（真果鉴 --all-sources）：全部 10 源，其余敏感源（含蓝果）经站源密码锁显示。
   static const values = allSourcesEnabled ? knownValues : primaryValues;
   static bool isAvailable(String id) => values.any((site) => site.id == id);
   static bool isKnown(String id) => allValues.any((site) => site.id == id);

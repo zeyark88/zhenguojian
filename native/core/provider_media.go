@@ -41,6 +41,8 @@ func (d *Downloader) providerBaseURL(source string) string {
 		configured, fallback = d.cfg.GuipianURL, guipianSiteBaseURL
 	case sourceHanxiaoquan:
 		configured, fallback = d.cfg.HanxiaoquanURL, hanxiaoquanSiteBaseURL
+	case sourceLanguo:
+		fallback = languoBaseURL
 	default:
 		fallback = "https://d2pypzndaqisk.cloudfront.net"
 	}
@@ -73,6 +75,8 @@ func providerSourceForURL(raw string) string {
 		return sourceGuipian
 	case host == "jennyhow.com" || host == "www.jennyhow.com":
 		return sourceHanxiaoquan
+	case host == "languo.ai" || host == "www.languo.ai" || host == "languo2.com":
+		return sourceLanguo
 	default:
 		return ""
 	}
@@ -127,6 +131,14 @@ func (d *Downloader) resolveProviderMedia(ctx context.Context, task Task) (provi
 	}
 	if chapter.Source == sourceHanxiaoquan {
 		return d.resolveHanxiaoquanMedia(ctx, task)
+	}
+	// 0.9.0（合入上游）：蓝果为标准 HLS，按分集编号即时解析详情页内嵌
+	// epPlaySrcs（auth_key 有时效，约 1~2 小时，故不可长缓存）。
+	if chapter.Source == sourceLanguo {
+		if _, sourceID, valid := splitProviderDramaID(task.DramaID); valid {
+			return d.resolveLanguoMedia(ctx, sourceID, chapter.EpisodeString(task.Index))
+		}
+		return d.resolveLanguoMedia(ctx, "", chapter.EpisodeString(task.Index))
 	}
 	if strings.HasPrefix(chapter.VideoURL, "hongguo-cenc://") {
 		return d.resolveHongguoMedia(ctx, task)

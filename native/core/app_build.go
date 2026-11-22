@@ -11,7 +11,8 @@ func nativeSourceAvailable(source string) bool {
 	if buildAllSources == "true" {
 		return isHuangguoProviderSource(source)
 	}
-	// 默认版：红果 + 韩小圈 + 鬼片 + 青空（常用四源直显，与 Dart primaryValues 一致）。
+	// 默认版：红果 + 韩小圈 + 鬼片（常用三源直显，与 Dart primaryValues 一致）；
+	// 蓝果（0.9.0 合入上游）只在全源版可用。
 	switch source {
 	case sourceHongguo, sourceHanxiaoquan, sourceGuipian:
 		return true

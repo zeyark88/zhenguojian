@@ -28,7 +28,8 @@ const (
 	sourceYeguo         = "yeguo"
 	sourceGuipian       = "guipian"
 	sourceHanxiaoquan   = "hanxiaoquan"
-	sourceCloudFront    = "cloudfront"
+	// sourceLanguo 声明于 provider_languo.go（蓝果源，0.9.0 合入上游）。
+	sourceCloudFront = "cloudfront"
 
 	providerMaxBodyBytes = 20 * 1024 * 1024
 	providerTimeout      = 12 * time.Second
@@ -89,7 +90,7 @@ func splitProviderDramaID(id string) (source, sourceID string, ok bool) {
 
 func isHuangguoProviderSource(source string) bool {
 	switch canonicalProviderSource(source) {
-	case sourceHuangguoAI, sourceHuangguoVideo, sourceHuangdou, sourceHongguo, sourceHuangju, sourceYeguo, sourceGuipian, sourceHanxiaoquan, sourceCloudFront:
+	case sourceHuangguoAI, sourceHuangguoVideo, sourceHuangdou, sourceHongguo, sourceHuangju, sourceYeguo, sourceGuipian, sourceHanxiaoquan, sourceLanguo, sourceCloudFront:
 		return true
 	default:
 		return false
@@ -114,6 +115,8 @@ func canonicalProviderSource(source string) string {
 		return sourceGuipian
 	case "hanxiaoquan", "jennyhow.com", "www.jennyhow.com":
 		return sourceHanxiaoquan
+	case "languo", "languo.ai", "languo2.com", "蓝果":
+		return sourceLanguo
 	case "cloudfront":
 		return sourceCloudFront
 	default:
