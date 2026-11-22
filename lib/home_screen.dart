@@ -1265,7 +1265,14 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
                                 label: entry.$2.$2,
                                 icon: entry.$2.$1,
                                 selected: _tab == entry.$1,
-                                autofocus: entry.$1 == 0,
+                                // 0.9.4（TV 加固）：侧栏不再 autofocus。
+                                // 原先侧栏「首页」按钮与竖滑流的画面 Focus 争
+                                // autofocus 且侧栏先构建必胜，进入应用后焦点在
+                                // 侧栏上，遥控确认键误触「切换标签」、上下键在
+                                // 侧栏列表间移动，用户找控制条无从下手。
+                                // 现在初始焦点直接落在首页画面（上下=切剧、
+                                // 确认=暂停、下/上=控制条），按左键才去侧栏。
+                                autofocus: false,
                                 onPressed: () => _changeTab(entry.$1),
                               ),
                             ),

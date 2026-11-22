@@ -1874,6 +1874,15 @@ class _FeedPageState extends State<_FeedPage> with WidgetsBindingObserver {
     // 0.7.6：提前读一次系统媒体音量，避免第一次调音量时起点是 0。
     unawaited(_syncSystemVolume());
     unawaited(_syncScreenBrightness());
+    // 0.9.4（TV 加固）：进入即上报一次，把遥控按键处理器交给父级。
+    // 此前只依赖 active 变化与 _prepare 成功两个时机——首个视频加载
+    // 失败或进行中时 _pageRemoteKey 为 null，TV 上「下」直接走默认
+    // 分支切剧，错误页上也无法用控制条重试。
+    if (widget.active) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted) _reportEpisodeState();
+      });
+    }
     if (widget.active) _prepare();
   }
 
@@ -2790,6 +2799,21 @@ class _FeedPageState extends State<_FeedPage> with WidgetsBindingObserver {
 
   void _tap() {
     if (_interactions?.suppressTap ?? false) return;
+    // 0.9.4（TV 遥控加固）：TV 布局下画面点击语义改为「拉出控制条」，
+    // 不再切换显隐、也不触发暂停。原因：电视系统会把遥控 OK 键合成
+    // 为触摸事件命中本层——若维持切换语义，确认键的 KeyEvent 刚把控制条
+    // 拉出来，紧随其后的合成 tap 会立刻把它翻回去，表现为「控制条闪一下
+    // 就没了」且后续「下」键直接切剧。改为只显示（幂等）后，合成 tap 无害；
+    // 手机/桌面保持原切换行为不变。
+    if (AppLayout.isTelevision(context)) {
+      _autoAdvancing = false;
+      if (!_controlsVisible || !(_player?.state.playing ?? false)) {
+        setState(() => _controlsVisible = true);
+      }
+      _refreshFullscreen();
+      _showControls();
+      return;
+    }
     // 用户点了画面 → 解除自动连播静默，这次点击要能看到效果。
     _autoAdvancing = false;
     setState(() => _controlsVisible = !_controlsVisible);
@@ -3135,10 +3159,22 @@ class _FeedPageState extends State<_FeedPage> with WidgetsBindingObserver {
     }
     if (key == LogicalKeyboardKey.arrowDown ||
         key == LogicalKeyboardKey.mediaTrackNext) {
-      // TV 布局：控件条可见时「下」优先进入控件条（不切剧）。
-      if (AppLayout.isTelevision(context) && _controlLayerVisible) {
-        if (_firstSideNode.canRequestFocus && _firstSideNode.context != null) {
-          _firstSideNode.requestFocus();
+      // 0.9.4（TV 加固）：TV 布局下「下」= 进入控制条，**不再要求
+      // 控制条已可见**——直接拉出并聚焦（更符合电视直觉，也兜住
+      // 「确认键后控制条又被隐藏」的边缘态）。加速中除外：此时控制层
+      // 物理隐藏（ExcludeFocus），聚焦无意义。
+      if (AppLayout.isTelevision(context) &&
+          !(_interactions?.boosting ?? false)) {
+        if (_firstSideNode.context != null) {
+          setState(() => _controlsVisible = true);
+          // 聚焦必须延后到下一帧：可见性变化要先完成重建，
+          // ExcludeFocus 解除对子树焦点的排除后 requestFocus 才生效
+          // （同帧内请求会被排除中的节点直接拒绝，0.9.4 实测）。
+          WidgetsBinding.instance.addPostFrameCallback((_) {
+            if (mounted && _firstSideNode.canRequestFocus) {
+              _firstSideNode.requestFocus();
+            }
+          });
           return KeyEventResult.handled;
         }
       }
@@ -3181,10 +3217,17 @@ class _FeedPageState extends State<_FeedPage> with WidgetsBindingObserver {
     }
     if (key == LogicalKeyboardKey.arrowDown ||
         key == LogicalKeyboardKey.mediaTrackNext) {
-      if (AppLayout.isTelevision(context) && _fullscreenControlLayerVisible) {
-        if (_fullscreenFirstSideNode.canRequestFocus &&
-            _fullscreenFirstSideNode.context != null) {
-          _fullscreenFirstSideNode.requestFocus();
+      // 0.9.4：与竖屏同款加固——控制条隐藏时也直接拉出并聚焦（加速中除外），
+      // 聚焦延后一帧等 ExcludeFocus 解除。
+      if (AppLayout.isTelevision(context) &&
+          !(_interactions?.boosting ?? false)) {
+        if (_fullscreenFirstSideNode.context != null) {
+          setState(() => _controlsVisible = true);
+          WidgetsBinding.instance.addPostFrameCallback((_) {
+            if (mounted && _fullscreenFirstSideNode.canRequestFocus) {
+              _fullscreenFirstSideNode.requestFocus();
+            }
+          });
           return KeyEventResult.handled;
         }
       }

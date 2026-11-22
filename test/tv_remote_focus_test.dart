@@ -148,6 +148,12 @@ void main() {
     await press(tester, LogicalKeyboardKey.enter);
     await tester.pump(const Duration(milliseconds: 200));
 
+    // 0.9.4：TV 上画面点击（合成 tap）只能拉出控件条、不能翻回隐藏。
+    // 模拟电视系统跟随 OK 键派发的合成 tap 验证控件条仍在。
+    await tester.tap(find.byKey(const ValueKey('feed-focus-root')));
+    await tester.pump(const Duration(milliseconds: 120));
+    expect(find.byKey(const ValueKey('feed-speed')), findsOneWidget);
+
     // 下键：进入控件条，落在首按钮（倍速）上。
     await press(tester, LogicalKeyboardKey.arrowDown);
     await tester.pump(const Duration(milliseconds: 120));
@@ -184,6 +190,65 @@ void main() {
       FocusManager.instance.primaryFocus,
       equals(surface),
       reason: '从进度行再按「上」应回到画面焦点（父级整页节点）',
+    );
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('TV：播放中控制条隐藏时按下键直接拉出并聚焦（0.9.4 加固）', (tester) async {
+    tester.view.devicePixelRatio = 1;
+    tester.view.physicalSize = const Size(420, 880);
+    addTearDown(tester.view.resetDevicePixelRatio);
+    addTearDown(tester.view.resetPhysicalSize);
+
+    final store = await makeStore();
+    final repository = RouteRepository();
+    final player = ScriptedPlayer();
+
+    Future<void> pumpHost() => tester.pumpWidget(
+      _tvHost(
+        Scaffold(
+          body: VerticalFeedScreen(
+            key: const ValueKey('feed'),
+            repository: repository,
+            store: store,
+            embedded: true,
+            singleDrama: FixtureRepository.free,
+            active: true,
+            playerFactory: () => Player(platformPlayer: player),
+            videoBuilder: (controls) => controls,
+          ),
+        ),
+      ),
+    );
+
+    await pumpHost();
+    for (var i = 0; i < 20; i++) {
+      await tester.pump(const Duration(milliseconds: 20));
+    }
+    final surface = Focus.of(
+      tester.element(find.byKey(const ValueKey('feed-focus-root'))),
+    );
+
+    // 等隐藏计时（4 秒）跑完：播放中控制条自动隐藏。
+    await tester.pump(const Duration(seconds: 5));
+
+    // 下键（控制条隐藏状态）：应拉出控制条并聚焦倍速，而不是切剧。
+    await press(tester, LogicalKeyboardKey.arrowDown);
+    await tester.pump(const Duration(milliseconds: 200));
+    final speedIcon = find
+        .descendant(
+          of: find.byKey(const ValueKey('feed-speed')),
+          matching: find.byType(Icon),
+        )
+        .first;
+    expect(
+      nodeInside(tester, speedIcon).hasFocus,
+      isTrue,
+      reason: '0.9.4：控制条隐藏时按「下」也应拉出并聚焦首按钮（真机场景加固）',
+    );
+    expect(
+      FocusManager.instance.primaryFocus,
+      isNot(equals(surface)),
     );
     expect(tester.takeException(), isNull);
   });
