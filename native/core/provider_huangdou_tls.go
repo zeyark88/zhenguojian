@@ -73,9 +73,16 @@ func huangdouProxyFromEnvironment(request *http.Request) (*url.URL, error) {
 //
 // 播放列表地址同样在 xqjurgek.top 下，证书过期时会被严格校验拦截。
 func huangdouGetText(ctx context.Context, d *Downloader, address, referer string) (string, error) {
+	body, _, err := huangdouGetTextFinal(ctx, d, address, referer)
+	return body, err
+}
+
+// huangdouGetTextFinal 与 huangdouGetText 相同，另外返回重定向后的最终地址。
+// 播放列表里的相对分片地址要按最终地址解析，否则跨域重定向后分会取不到。
+func huangdouGetTextFinal(ctx context.Context, d *Downloader, address, referer string) (string, string, error) {
 	request, err := http.NewRequestWithContext(ctx, http.MethodGet, address, nil)
 	if err != nil {
-		return "", err
+		return "", address, err
 	}
 	request.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120 Safari/537.36")
 	request.Header.Set("Accept", "*/*")
@@ -85,19 +92,42 @@ func huangdouGetText(ctx context.Context, d *Downloader, address, referer string
 	if d != nil && d.limiter != nil {
 		release, err := d.limiter.acquire(ctx, request)
 		if err != nil {
-			return "", err
+			return "", address, err
 		}
 		defer release()
 	}
 	response, body, err := huangdouDo(nil, request, 20*time.Second)
 	if err != nil {
-		return "", err
+		return "", address, err
+	}
+	finalURL := address
+	if response.Request != nil && response.Request.URL != nil {
+		finalURL = response.Request.URL.String()
 	}
 	if response.StatusCode < 200 || response.StatusCode >= 300 {
-		return "", fmt.Errorf("黄豆播放列表 HTTP %d", response.StatusCode)
+		return "", finalURL, fmt.Errorf("黄豆播放列表 HTTP %d", response.StatusCode)
 	}
-	return string(body), nil
+	return string(body), finalURL, nil
 }
+
+// huangdouStreamClient 返回不限总时长、可供分片流式传输的宽松客户端。
+//
+// 复用 huangdouHTTPClient 的 Transport（连接池与代理一致），只把 Timeout 置 0，
+// 避免长视频分片在 25 秒总超时处被截断。
+func huangdouStreamClient() *http.Client {
+	huangdouStreamOnce.Do(func() {
+		base := huangdouHTTPClient()
+		clone := *base
+		clone.Timeout = 0
+		huangdouStreamClientCache = &clone
+	})
+	return huangdouStreamClientCache
+}
+
+var (
+	huangdouStreamOnce        sync.Once
+	huangdouStreamClientCache *http.Client
+)
 
 // huangdouDo 用宽松客户端发请求（黄豆专用）。
 //

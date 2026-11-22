@@ -10,7 +10,6 @@ class SourceSite {
   bool get onlineSearch => id == 'hongguo' || pagedSearch;
   bool get pagedSearch =>
       id == 'huangju' ||
-      id == 'yeguo' ||
       id == 'guipian' ||
       id == 'hanxiaoquan';
   bool get searchSuggestions => id == 'hongguo';
@@ -37,17 +36,16 @@ class SourceSite {
   static const restrictedValues = [
     SourceSite('huangdou', '黄豆', '精选短剧'),
     SourceSite('huangju', '黄剧', '热门 · 最新 · 分类短剧'),
-    SourceSite('yeguo', '野果', '分类短剧 · 在线搜索'),
     SourceSite('huangguo-video', '黄果剧场', '视频剧集'),
     SourceSite('huangguoai', '黄果 AI', 'AI 短剧'),
     SourceSite('cloudfront', '黄果旧版', '旧 API 剧库'),
-    SourceSite('languo', '蓝果', '蓝果短剧 · 男同短剧 · GV'),
   ];
   static const knownValues = [...primaryValues, ...restrictedValues];
   static const allValues = [...primaryValues, ...restrictedValues];
   /// 构建期可选源：
   /// - 默认版（红果鉴）：红果 + 韩小圈 + 鬼片（常用三源直显）；
-  /// - 全站源版（真果鉴 --all-sources）：全部 10 源，其余敏感源（含蓝果）经站源密码锁显示。
+  /// - 全站源版（真果鉴 --all-sources）：全部 8 源，其余敏感源经站源密码锁显示
+  ///   （0.9.2：野果、蓝果已整体移除，源码在历史 tag 可查）。
   static const values = allSourcesEnabled ? knownValues : primaryValues;
   static bool isAvailable(String id) => values.any((site) => site.id == id);
   static bool isKnown(String id) => allValues.any((site) => site.id == id);

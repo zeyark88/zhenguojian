@@ -33,6 +33,7 @@ type nativeStreamSession struct {
 	assets      map[string]nativeStreamAsset
 	referer     string
 	key         []byte
+	lenientTLS  bool
 	ctx         context.Context
 	cancel      context.CancelFunc
 	lastUsed    time.Time
@@ -72,8 +73,8 @@ func (stream *nativeStreamServer) nativeOpen(media providerMedia) (string, strin
 		panic(err)
 	}
 	token := hex.EncodeToString(tokenBytes)
-	ctx, cancel := context.WithCancel(providerMediaContext(context.Background(), media.credentials))
-	session := &nativeStreamSession{assets: map[string]nativeStreamAsset{}, referer: media.Referer, key: media.HLSKey, ctx: ctx, cancel: cancel, lastUsed: time.Now(), credentials: media.credentials}
+	ctx, cancel := context.WithCancel(providerMediaSessionContext(context.Background(), media.credentials, media.LenientTLS))
+	session := &nativeStreamSession{assets: map[string]nativeStreamAsset{}, referer: media.Referer, key: media.HLSKey, lenientTLS: media.LenientTLS, ctx: ctx, cancel: cancel, lastUsed: time.Now(), credentials: media.credentials}
 	stream.mu.Lock()
 	for id, old := range stream.sessions {
 		if time.Since(old.lastUsed) > 10*time.Minute {
@@ -236,7 +237,7 @@ func (stream *nativeStreamServer) nativeServe(writer http.ResponseWriter, reques
 		http.NotFound(writer, request)
 		return
 	}
-	ctx, cancel := context.WithCancel(providerMediaContext(request.Context(), session.credentials))
+	ctx, cancel := context.WithCancel(providerMediaSessionContext(request.Context(), session.credentials, session.lenientTLS))
 	defer cancel()
 	stop := context.AfterFunc(session.ctx, cancel)
 	defer stop()

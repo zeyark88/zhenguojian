@@ -136,6 +136,10 @@ func (d *Downloader) doMediaRequestWithClient(request *http.Request, client *htt
 		}
 		client = credentials.client(client)
 	}
+	// 黄豆等证书已过期但仍在服务的站源：分片/密钥请求改用宽松客户端。
+	if providerMediaLenient(request.Context()) {
+		client = huangdouStreamClient()
+	}
 	keyRequest := d.isHuangguoVideoURL(request.URL) && strings.HasPrefix(request.URL.Path, "/api/hls_key/")
 	origin := request.URL.Scheme + "://" + request.URL.Host
 	for attempt := 0; attempt < 2; attempt++ {

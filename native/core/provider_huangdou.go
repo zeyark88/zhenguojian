@@ -115,7 +115,7 @@ func (d *Downloader) resolveHuangdouPlayback(ctx context.Context, client *huangd
 		media = fmt.Sprintf("%s/api/drama/hls/%s/%d/play.m3u8?line=free", client.host, url.PathEscape(sourceID), seq)
 		// 0.9.0（合入上游）：黄豆域名证书过期/被重置时主客户端会严格拒连，
 		// 备用播放列表改用黄豆专用宽松证书客户端抓取（详见 provider_huangdou_tls.go）。
-		playlist, err := huangdouGetText(ctx, d, media, client.host+"/home")
+		playlist, _, err := huangdouGetTextFinal(ctx, d, media, client.host+"/home")
 		if err != nil || !strings.HasPrefix(strings.TrimSpace(playlist), "#EXTM3U") {
 			return providerMedia{}, errors.New("黄豆未提供有效的播放地址，备用播放列表也不可用")
 		}
@@ -124,7 +124,18 @@ func (d *Downloader) resolveHuangdouPlayback(ctx context.Context, client *huangd
 	if !isProviderHTTPMediaURL(media) {
 		return providerMedia{}, errors.New("黄豆播放地址不是 HTTP/HTTPS URL")
 	}
-	result := providerMedia{URL: media, Referer: client.host + "/home"}
+	// 0.9.0+：接口直接返回 m3u8（常见于 xqjurgek.top，证书 2026-11-06 已过期）时，
+	// 主客户端同样会被 TLS 校验拦截。这里统一用宽松客户端预取播放列表，
+	// 并标记 LenientTLS，使后续分片/密钥请求沿用同一策略。
+	result := providerMedia{URL: media, Referer: client.host + "/home", LenientTLS: true}
+	if parsedMedia, err := url.Parse(media); err == nil && strings.HasSuffix(strings.ToLower(parsedMedia.Path), ".m3u8") {
+		if playlist, finalURL, err := huangdouGetTextFinal(ctx, d, media, result.Referer); err == nil && strings.HasPrefix(strings.TrimSpace(strings.TrimPrefix(playlist, "\ufeff")), "#EXTM3U") {
+			result.Playlist = playlist
+			if finalURL != "" {
+				result.URL = finalURL
+			}
+		}
+	}
 	if rawKey := mapString(data, "hls_key"); rawKey != "" {
 		key, err := hex.DecodeString(rawKey)
 		if err != nil || len(key) != aes.BlockSize {

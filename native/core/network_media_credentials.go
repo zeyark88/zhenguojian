@@ -23,6 +23,30 @@ func providerMediaContext(ctx context.Context, credentials *providerMediaCredent
 	return context.WithValue(ctx, providerMediaCredentialsKey{}, credentials)
 }
 
+// providerMediaLenientKey 标记「本次媒体请求允许宽松校验证书」。
+//
+// 只对证书确已过期/被重置、但站点仍在正常服务的老站源（目前仅黄豆）开启，
+// 由 providerMedia.LenientTLS 携带，避免影响其他站源的严格校验。
+type providerMediaLenientKey struct{}
+
+func providerMediaLenientContext(ctx context.Context) context.Context {
+	return context.WithValue(ctx, providerMediaLenientKey{}, true)
+}
+
+func providerMediaLenient(ctx context.Context) bool {
+	value, _ := ctx.Value(providerMediaLenientKey{}).(bool)
+	return value
+}
+
+// providerMediaSessionContext 同时携带播放凭证与证书宽松标记，供播放/下载链路使用。
+func providerMediaSessionContext(ctx context.Context, credentials *providerMediaCredentials, lenient bool) context.Context {
+	ctx = providerMediaContext(ctx, credentials)
+	if lenient {
+		ctx = providerMediaLenientContext(ctx)
+	}
+	return ctx
+}
+
 func providerMediaOrigin(address *url.URL) string {
 	if address == nil {
 		return ""

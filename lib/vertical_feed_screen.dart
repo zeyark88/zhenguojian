@@ -328,7 +328,7 @@ class _VerticalFeedScreenState extends State<VerticalFeedScreen>
   /// 取流失败/为空时尝试借用其他已授权源；返回 true 表示已触发重载。
   ///
   /// 注意：用户**明确只选了一个源/一组源**时不借用。
-  /// 否则「选中蓝果 → 蓝果取不到 → 借来红果」表现为「选蓝果却播红果」，
+  /// 否则「选中黄豆 → 黄豆取不到 → 借来红果」表现为「选黄豆却播红果」，
   /// 是明确的错误行为（不能让兜底掩盖用户的选择）。
   bool _tryBorrowSources() {
     if (_borrowAllSources || widget.singleDrama != null) return false;

@@ -25,10 +25,9 @@ const (
 	sourceHuangdou      = "huangdou"
 	sourceHongguo       = "hongguo"
 	sourceHuangju       = "huangju"
-	sourceYeguo         = "yeguo"
 	sourceGuipian       = "guipian"
 	sourceHanxiaoquan   = "hanxiaoquan"
-	// sourceLanguo 声明于 provider_languo.go（蓝果源，0.9.0 合入上游）。
+	// 0.9.2：removed sourceYeguo/sourceLanguo（野果/蓝果整体移除，源码在历史 tag v0.9.1+86a 可查）。
 	sourceCloudFront = "cloudfront"
 
 	providerMaxBodyBytes = 20 * 1024 * 1024
@@ -90,7 +89,7 @@ func splitProviderDramaID(id string) (source, sourceID string, ok bool) {
 
 func isHuangguoProviderSource(source string) bool {
 	switch canonicalProviderSource(source) {
-	case sourceHuangguoAI, sourceHuangguoVideo, sourceHuangdou, sourceHongguo, sourceHuangju, sourceYeguo, sourceGuipian, sourceHanxiaoquan, sourceLanguo, sourceCloudFront:
+	case sourceHuangguoAI, sourceHuangguoVideo, sourceHuangdou, sourceHongguo, sourceHuangju, sourceGuipian, sourceHanxiaoquan, sourceCloudFront:
 		return true
 	default:
 		return false
@@ -109,14 +108,10 @@ func canonicalProviderSource(source string) string {
 		return sourceHongguo
 	case "huangju", "huangju.net", "api.huangju.net":
 		return sourceHuangju
-	case "yeguo", "ygdj7.com", "www.ygdj7.com", "analyze.buxefaex.cc", "delta.ygrwdsgt.cc", "yeguodj.com", "www.yeguodj.com":
-		return sourceYeguo
 	case "guipian", "guipianwu.com", "www.guipianwu.com":
 		return sourceGuipian
 	case "hanxiaoquan", "jennyhow.com", "www.jennyhow.com":
 		return sourceHanxiaoquan
-	case "languo", "languo.ai", "languo2.com", "蓝果":
-		return sourceLanguo
 	case "cloudfront":
 		return sourceCloudFront
 	default:

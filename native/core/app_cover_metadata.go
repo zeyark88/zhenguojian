@@ -43,17 +43,11 @@ func (d *Downloader) nativeCoverAddress(ctx context.Context, drama nativeDrama) 
 	case sourceHuangju:
 		fresh, _, err := d.fetchHuangjuDetail(ctx, id)
 		return nativeNormalize(fresh).Cover, err
-	case sourceYeguo:
-		fresh, _, err := d.fetchYeguoDetail(ctx, id)
-		return nativeNormalize(fresh).Cover, err
 	case sourceGuipian:
 		fresh, _, err := d.fetchGuipianDetail(ctx, id)
 		return nativeNormalize(fresh).Cover, err
 	case sourceHanxiaoquan:
 		fresh, _, err := d.fetchHanxiaoquanDetail(ctx, id)
-		return nativeNormalize(fresh).Cover, err
-	case sourceLanguo:
-		fresh, _, err := d.fetchLanguoDetail(ctx, id)
 		return nativeNormalize(fresh).Cover, err
 	case sourceCloudFront:
 		if !rankingSourceID.MatchString(id) {

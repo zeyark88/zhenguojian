@@ -18,7 +18,18 @@ type providerMedia struct {
 	HLSKey      []byte
 	CENCKey     []byte
 	Quality     int
-	Variants    []providerMedia
+	// LenientTLS 为真时，播放/下载链路的后续媒体请求（播放列表、分片、密钥）
+	// 允许跳过证书校验。仅黄豆这类证书已过期但仍在服务的站源使用。
+	LenientTLS bool
+	Variants   []providerMedia
+}
+
+// providerMediaRequestContext 让解析阶段的播放列表请求也能继承证书宽松标记。
+func providerMediaRequestContext(ctx context.Context, media providerMedia) context.Context {
+	if media.LenientTLS {
+		return providerMediaLenientContext(ctx)
+	}
+	return ctx
 }
 
 func (d *Downloader) providerBaseURL(source string) string {
@@ -35,14 +46,10 @@ func (d *Downloader) providerBaseURL(source string) string {
 		configured, fallback = d.cfg.HongguoURL, hongguoBaseURL
 	case sourceHuangju:
 		configured, fallback = d.cfg.HuangjuURL, huangjuBaseURL
-	case sourceYeguo:
-		configured, fallback = d.cfg.YeguoURL, yeguoBaseURL
 	case sourceGuipian:
 		configured, fallback = d.cfg.GuipianURL, guipianSiteBaseURL
 	case sourceHanxiaoquan:
 		configured, fallback = d.cfg.HanxiaoquanURL, hanxiaoquanSiteBaseURL
-	case sourceLanguo:
-		fallback = languoBaseURL
 	default:
 		fallback = "https://d2pypzndaqisk.cloudfront.net"
 	}
@@ -66,17 +73,10 @@ func providerSourceForURL(raw string) string {
 		return sourceHongguo
 	case host == "huangju.net" || host == "www.huangju.net" || host == "api.huangju.net":
 		return sourceHuangju
-	case host == "ygdj7.com" || host == "www.ygdj7.com" ||
-		host == "analyze.buxefaex.cc" || strings.HasSuffix(host, ".buxefaex.cc") ||
-		strings.HasSuffix(host, ".fzchosdi.cc") ||
-		host == "delta.ygrwdsgt.cc" || host == "yeguodj.com" || host == "www.yeguodj.com":
-		return sourceYeguo
 	case host == "guipianwu.com" || host == "www.guipianwu.com":
 		return sourceGuipian
 	case host == "jennyhow.com" || host == "www.jennyhow.com":
 		return sourceHanxiaoquan
-	case host == "languo.ai" || host == "www.languo.ai" || host == "languo2.com":
-		return sourceLanguo
 	default:
 		return ""
 	}
@@ -84,7 +84,7 @@ func providerSourceForURL(raw string) string {
 
 func (d *Downloader) providerURLCandidates(raw string) []string {
 	source := providerSourceForURL(raw)
-	if source == "" || source == sourceHuangju || source == sourceYeguo {
+	if source == "" || source == sourceHuangju {
 		return []string{raw}
 	}
 	parsed, _ := url.Parse(raw)
@@ -123,22 +123,11 @@ func (d *Downloader) resolveProviderMedia(ctx context.Context, task Task) (provi
 	if chapter.Source == sourceHuangju {
 		return d.resolveHuangjuMedia(ctx, task)
 	}
-	if chapter.Source == sourceYeguo {
-		return d.resolveYeguoMedia(ctx, task)
-	}
 	if chapter.Source == sourceGuipian {
 		return d.resolveGuipianMedia(ctx, task)
 	}
 	if chapter.Source == sourceHanxiaoquan {
 		return d.resolveHanxiaoquanMedia(ctx, task)
-	}
-	// 0.9.0（合入上游）：蓝果为标准 HLS，按分集编号即时解析详情页内嵌
-	// epPlaySrcs（auth_key 有时效，约 1~2 小时，故不可长缓存）。
-	if chapter.Source == sourceLanguo {
-		if _, sourceID, valid := splitProviderDramaID(task.DramaID); valid {
-			return d.resolveLanguoMedia(ctx, sourceID, chapter.EpisodeString(task.Index))
-		}
-		return d.resolveLanguoMedia(ctx, "", chapter.EpisodeString(task.Index))
 	}
 	if strings.HasPrefix(chapter.VideoURL, "hongguo-cenc://") {
 		return d.resolveHongguoMedia(ctx, task)
@@ -201,18 +190,21 @@ func (d *Downloader) resolveProviderMedia(ctx context.Context, task Task) (provi
 	}
 	parsed, _ := url.Parse(media.URL)
 	if strings.HasSuffix(strings.ToLower(parsed.Path), ".m3u8") {
-		playlist, finalURL, err := d.fetchMediaPlaylist(ctx, media.URL, media.Referer)
-		if err != nil {
-			return providerMedia{}, fmt.Errorf("获取播放列表失败: %w", err)
+		if media.Playlist == "" {
+			playlist, finalURL, err := d.fetchMediaPlaylist(providerMediaRequestContext(ctx, media), media.URL, media.Referer)
+			if err != nil {
+				return providerMedia{}, fmt.Errorf("获取播放列表失败: %w", err)
+			}
+			media.Playlist, media.URL = playlist, finalURL
 		}
-		if !strings.HasPrefix(strings.TrimSpace(strings.TrimPrefix(playlist, "\ufeff")), "#EXTM3U") {
+		if !strings.HasPrefix(strings.TrimSpace(strings.TrimPrefix(media.Playlist, "\ufeff")), "#EXTM3U") {
 			return providerMedia{}, fmt.Errorf("站点未返回有效 M3U8，可能需要登录或链接已失效")
 		}
-		if duration := m3u8Duration(playlist); duration > 0 {
-			media.Duration = duration
+		if media.Duration <= 0 {
+			if duration := m3u8Duration(media.Playlist); duration > 0 {
+				media.Duration = duration
+			}
 		}
-		media.Playlist = playlist
-		media.URL = finalURL
 	}
 	return media, nil
 }

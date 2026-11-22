@@ -34,7 +34,6 @@ func providerParityDownloader(t *testing.T, transport func(*http.Request, url.Va
 	})
 	d.cfg.HuangjuAPIURL = "https://api.huangju.test"
 	d.cfg.HuangjuURL = "https://huangju.test"
-	d.cfg.YeguoURL = "https://yeguo.test"
 	return d
 }
 
@@ -50,88 +49,38 @@ func TestProviderSourceParsesTextFixturesAndRejectsMismatchedIdentity(t *testing
 	if validHuangjuID("bad:value") || !validHuangjuID(strings.Repeat("a", 450)) || validHuangjuID(strings.Repeat("a", 451)) {
 		t.Fatal("huangju id validation changed")
 	}
-	yeguoRow := map[string]any{"video_id": "123", "title": "野果样本", "episode_count": "12", "serialize_status": "2", "play_count_text": "3.4万", "published_at": "2026-09-23T10:20:30+08:00", "is_vip": "1", "tags": []any{"甜宠", "重生"}}
-	yeguo, err := yeguoDramaFromMap(yeguoRow, yeguoBaseURL)
-	if err != nil || yeguo.ID != "yeguo:123" || yeguo.ReleaseStatus != "finished" || yeguo.Views != "3.4万次播放" || yeguo.OnlineDate != "2026-09-23" || yeguo.VIP == nil || !*yeguo.VIP {
-		t.Fatalf("yeguo text row parsed incorrectly: %+v %v", yeguo, err)
-	}
-}
-
-func TestYeguoDomainAliasesAndDefaultEndpoint(t *testing.T) {
-	if got := (&Downloader{cfg: defaultConfig()}).providerBaseURL(sourceYeguo); got != "https://analyze.buxefaex.cc" {
-		t.Fatalf("unexpected default yeguo endpoint: %s", got)
-	}
-	for _, address := range []string{
-		"https://analyze.buxefaex.cc/",
-		"https://some-line.buxefaex.cc/drama/video/1/",
-		"https://some-backup.fzchosdi.cc/drama/video/1/",
-		"https://delta.ygrwdsgt.cc/",
-		"https://yeguodj.com/",
-		"https://ygdj7.com/",
-	} {
-		if got := providerSourceForURL(address); got != sourceYeguo {
-			t.Fatalf("yeguo domain was not recognized: %s -> %s", address, got)
-		}
-	}
-	for _, alias := range []string{
-		"analyze.buxefaex.cc",
-		"delta.ygrwdsgt.cc",
-		"yeguodj.com",
-		"ygdj7.com",
-	} {
-		if got := canonicalProviderSource(alias); got != sourceYeguo {
-			t.Fatalf("yeguo source alias was not canonicalized: %s -> %s", alias, got)
-		}
-	}
-}
-
-func TestYeguoTransitPageDiscoversCurrentLineDomains(t *testing.T) {
-	encoded := base64.StdEncoding.EncodeToString([]byte(`<script>
-words = 'abandon,ability,analyze,chair'.split(',');
-lineAry = Vx.map(Vx.range(1, 3), function () { return location.protocol + '//' + words.random() + '.buxefaex.cc' });
-backupLine = Vx.map(Vx.range(1, 3), function () { return location.protocol + '//' + words.random() + '.fzchosdi.cc'; });
-</script>`))
-	sites := yeguoTransitSites(`<script>document.write(Base64.decode("` + encoded + `"));</script>`)
-	want := []string{"https://analyze.buxefaex.cc", "https://ability.buxefaex.cc", "https://abandon.buxefaex.cc", "https://analyze.fzchosdi.cc"}
-	for _, site := range want {
-		found := false
-		for _, candidate := range sites {
-			found = found || candidate == site
-		}
-		if !found {
-			t.Fatalf("transit discovery missed %s in %v", site, sites)
-		}
-	}
 }
 
 func TestProviderCatalogUpdateUsesSinglePagePerBatch(t *testing.T) {
+	// 0.9.2：原实现以野果为载体（野果源已在 0.9.2 整体移除），
+	// 改用黄剧验证同一逻辑：默认「更新」每批只拉一页。
 	var pages []string
 	engine := sourceFixtureEngine(t, func(request *http.Request) (*http.Response, error) {
-		if request.URL.Host != "api.yeguo.test" || request.URL.Path != "/api/theater/exploreList" {
-			t.Fatalf("unexpected yeguo catalog request: %s", request.URL.String())
+		if request.URL.Host != "api.huangju.test" {
+			t.Fatalf("unexpected host: %s", request.URL.Host)
 		}
-		if request.Method != http.MethodPost {
-			t.Fatalf("yeguo catalog must use POST for pagination, got %s", request.Method)
+		if request.URL.Path == "/auth/guest" {
+			return sourceFixtureResponse(request, http.StatusOK, `{"token":"guest-token"}`), nil
 		}
-		if err := request.ParseForm(); err != nil {
-			t.Fatal(err)
+		if request.URL.Path != "/dramas" {
+			t.Fatalf("unexpected path: %s", request.URL.Path)
 		}
-		page := request.Form.Get("page")
+		page := request.URL.Query().Get("page")
 		pages = append(pages, page)
-		body := fmt.Sprintf(`{"status":"1","data":{"list":[{"video_id":"8%s","title":"野果默认分页%s","description":"完整资料","episode_count":"6","serialize_status":"2"}],"page":%s,"limit":1,"total":50,"has_more":%q}}`, page, page, page, map[bool]string{true: "1", false: "0"}[page != "50"])
-		return sourceFixtureResponse(request, http.StatusOK, body), nil
+		return sourceFixtureResponse(request, http.StatusOK, fmt.Sprintf(`{"items":[{"id":"8%s","slug":"batch-%s","title":"批次样本%s","description":"完整资料","totalEpisodes":6}],"page":%s,"pageSize":1,"total":50}`, page, page, page, page)), nil
 	})
-	engine.downloader.yeguoClient().access = &yeguoAccess{base: "https://api.yeguo.test", identifier: "fixture-trace", loadedAt: time.Now()}
+	engine.downloader.cfg.HuangjuAPIURL = "https://api.huangju.test"
+	engine.downloader.cfg.HuangjuURL = "https://huangju.test"
 
-	if err := engine.updateSource(context.Background(), sourceYeguo, "update"); err != nil {
+	if err := engine.updateSource(context.Background(), sourceHuangju, "update"); err != nil {
 		t.Fatal(err)
 	}
 	if len(pages) != 1 || pages[0] != "1" {
 		t.Fatalf("default source update should request a single page per batch: %v", pages)
 	}
-	page := engine.nativeCached(sourceYeguo)
+	page := engine.nativeCached(sourceHuangju)
 	if len(page.Items) != 1 || page.Page != 1 || !page.HasMore {
-		t.Fatalf("wrong yeguo source cache after default update: %+v", page)
+		t.Fatalf("wrong huangju source cache after default update: %+v", page)
 	}
 }
 
@@ -164,29 +113,6 @@ func TestProviderCatalogUpdateKeepsSinglePageContinuation(t *testing.T) {
 	}
 }
 
-func TestYeguoCatalogAcceptsSourcePageSize(t *testing.T) {
-	d := providerParityDownloader(t, func(request *http.Request, form url.Values) (*http.Response, error) {
-		if request.URL.Host != "api.yeguo.test" || request.URL.Path != "/api/theater/exploreList" {
-			t.Fatalf("unexpected yeguo request: %s", request.URL.String())
-		}
-		if request.Method != http.MethodPost {
-			t.Fatalf("yeguo catalog must use POST for pagination, got %s", request.Method)
-		}
-		rows := make([]any, 0, 30)
-		for index := 1; index <= 30; index++ {
-			id := strconv.Itoa(9000 + index)
-			rows = append(rows, map[string]any{"video_id": id, "title": "野果目录样本 " + id, "episode_count": "6", "serialize_status": "2"})
-		}
-		body, _ := json.Marshal(map[string]any{"status": "1", "data": map[string]any{"list": rows, "limit": 20, "total": 30, "has_more": "0"}})
-		return sourceFixtureResponse(request, http.StatusOK, string(body)), nil
-	})
-	d.yeguoClient().access = &yeguoAccess{base: "https://api.yeguo.test", identifier: "fixture-trace", loadedAt: time.Now()}
-	items, more, err := d.fetchYeguoCatalogPage(context.Background(), 1, "", "")
-	if err != nil || more || len(items) != 30 {
-		t.Fatalf("yeguo source-sized page rejected: items=%d more=%t err=%v", len(items), more, err)
-	}
-}
-
 func TestProviderCatalogRankingsUseProviderCatalogPages(t *testing.T) {
 	t.Run("huangju", func(t *testing.T) {
 		d := providerParityDownloader(t, func(request *http.Request, form url.Values) (*http.Response, error) {
@@ -202,20 +128,6 @@ func TestProviderCatalogRankingsUseProviderCatalogPages(t *testing.T) {
 		page, err := d.fetchCatalogRankingPage(context.Background(), board, 2)
 		if err != nil || len(page.Items) != 2 || page.Items[0].Rank != 21 || page.Items[0].Drama.Cover != "" {
 			t.Fatalf("huangju catalog ranking failed: %+v %v", page, err)
-		}
-	})
-	t.Run("yeguo", func(t *testing.T) {
-		d := providerParityDownloader(t, func(request *http.Request, form url.Values) (*http.Response, error) {
-			if request.URL.Path != "/api/theater/exploreList" || request.Method != http.MethodPost || form.Get("page") != "1" {
-				t.Fatalf("unexpected yeguo ranking request: %s %s %v", request.Method, request.URL.String(), form)
-			}
-			return sourceFixtureResponse(request, http.StatusOK, `{"status":"1","data":{"list":[{"video_id":"301","title":"野果榜一","episode_count":"10","serialize_status":"2"}],"page":1,"limit":20,"total":21,"has_more":"1"}}`), nil
-		})
-		d.yeguoClient().access = &yeguoAccess{base: "https://api.yeguo.test", identifier: "fixture-trace", loadedAt: time.Now()}
-		board, _ := findRankingBoard("yeguo-recommend")
-		page, err := d.fetchCatalogRankingPage(context.Background(), board, 1)
-		if err != nil || len(page.Items) != 1 || !page.HasMore || page.Items[0].Drama.ID != "yeguo:301" || page.Items[0].Drama.Cover != "" {
-			t.Fatalf("yeguo catalog ranking failed: %+v %v", page, err)
 		}
 	})
 }

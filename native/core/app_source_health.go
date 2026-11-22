@@ -151,7 +151,7 @@ func (engine *nativeEngine) checkSource(ctx context.Context, source string, sele
 		if err != nil {
 			return "", err
 		}
-		ctx = providerMediaContext(ctx, media.credentials)
+		ctx = providerMediaSessionContext(ctx, media.credentials, media.LenientTLS)
 		keyURL, segmentURL, err = engine.downloader.sourceProbeResources(ctx, media)
 		return "已取得可识别的播放地址", err
 	}) {
@@ -192,7 +192,7 @@ func (engine *nativeEngine) checkSource(ctx context.Context, source string, sele
 }
 
 func (d *Downloader) sourceProbeResources(ctx context.Context, media providerMedia) (string, string, error) {
-	ctx = providerMediaContext(ctx, media.credentials)
+	ctx = providerMediaSessionContext(ctx, media.credentials, media.LenientTLS)
 	if media.Playlist == "" {
 		return "", media.URL, nil
 	}
