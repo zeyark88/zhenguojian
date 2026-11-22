@@ -964,6 +964,16 @@ class _VerticalFeedScreenState extends State<VerticalFeedScreen>
   ///   确认键 = 播放/暂停 + 弹出控件条。
   /// 页面未处理时维持原有默认行为（下=下一部、上=上一部、确认键播放/暂停），
   /// 手机/桌面与旧版完全一致。
+  /// 判断焦点节点是否位于本页面（含子页/控件条）子树内。
+  /// 弹窗（root navigator 的 bottom sheet）不在其内。
+  bool _focusInsidePage(FocusNode node) {
+    for (FocusNode? candidate = node; candidate != null;
+        candidate = candidate.parent) {
+      if (candidate == _focus) return true;
+    }
+    return false;
+  }
+
   KeyEventResult _onKey(FocusNode node, KeyEvent event) {
     if (event is! KeyDownEvent && event is! KeyRepeatEvent) {
       return KeyEventResult.ignored;
@@ -979,6 +989,12 @@ class _VerticalFeedScreenState extends State<VerticalFeedScreen>
     // 此时交给按钮自身（确认键）与系统方向遍历（方向键）。
     final primary = FocusManager.instance.primaryFocus;
     if (primary != null && primary != _focus) {
+      return KeyEventResult.ignored;
+    }
+    // 0.9.5：焦点位于弹窗（bottom sheet 在 root navigator 上，不属于本页
+    // 子树）时同样放行——primaryFocus 为弹窗节点时上面的判据已覆盖，
+    // 这里兜底「焦点不在本页任何节点下」的情况（如 sheet 刚弹出）。
+    if (primary == null || !_focusInsidePage(primary)) {
       return KeyEventResult.ignored;
     }
     // 播放 / 暂停：电视遥控器播放键、确认键（DPAD_CENTER）与空格。
@@ -1623,6 +1639,9 @@ class _FeedPageState extends State<_FeedPage> with WidgetsBindingObserver {
     canRequestFocus: false,
     skipTraversal: true,
   );
+
+  /// 0.9.5（TV）：弹窗（倍速/清晰度/选集）右上角关闭按钮的焦点节点。
+  final _sheetCloseNode = FocusNode(debugLabel: 'sheet-close');
 
   /// 窗口亮度下限（0.7.8，`XQ-0114`）：避免滑到全黑看不见。
   static const double _minBrightness = .05;
@@ -2655,6 +2674,7 @@ class _FeedPageState extends State<_FeedPage> with WidgetsBindingObserver {
     _fullscreenFirstSideNode.dispose();
     _fullscreenControlsNode.dispose();
     _fullscreenSideRowNode.dispose();
+    _sheetCloseNode.dispose();
     // 预载器（0.2.31）由**父级**持有并释放（0.6.9 改为全流共享），
     // 本页只借用，不负责 dispose。
     super.dispose();
@@ -3135,6 +3155,13 @@ class _FeedPageState extends State<_FeedPage> with WidgetsBindingObserver {
   ///   其余情况返回 ignored，父级按原语义处理（下=下一部、上=上一部）。
   KeyEventResult _handleRemoteKey(FocusNode surface, KeyEvent event) {
     if (!mounted || _closed || !widget.active) {
+      return KeyEventResult.ignored;
+    }
+    // 0.9.5（TV）：弹窗打开期间（倍速/清晰度/选集等 bottom sheet），
+    // 页面级按键处理全部放行——焦点已交给弹窗内的节点，方向键应走
+    // 弹窗内的系统遍历，确认键由弹窗按钮自身激活。此前 _panelOpen
+    // 未纳入判据，焦点在弹窗网格上按「下」会被页面当作切剧消费。
+    if (_panelOpen) {
       return KeyEventResult.ignored;
     }
     final key = event.logicalKey;
@@ -3886,6 +3913,17 @@ class _FeedPageState extends State<_FeedPage> with WidgetsBindingObserver {
   Widget _sheetShell({required String title, required Widget child, Key? key}) {
     const background = Color(0xFF191A20);
     const foreground = Colors.white;
+    // 0.9.5（TV）：bottom sheet 打开时不会自动聚焦任何子项。选集弹窗
+    // 由 _episodeSheetGrid 自行聚焦当前集；关闭按钮显式挂 FocusNode
+    //（IconButton 焦点可达），倍速/清晰度 chip 依靠自身 InkWell 焦点
+    // 由系统遍历到达。此前尝试的 FocusScope 兜底在 sheet（root
+    // navigator，无 Focus 祖先）里 Focus.of() 断言崩溃，已移除。
+    return _sheetShellContent(title: title, child: child, key: key);
+  }
+
+  Widget _sheetShellContent({required String title, required Widget child, Key? key}) {
+    const background = Color(0xFF191A20);
+    const foreground = Colors.white;
     return Theme(
       data: ThemeData(
         useMaterial3: true,
@@ -3946,6 +3984,7 @@ class _FeedPageState extends State<_FeedPage> with WidgetsBindingObserver {
                         ),
                         IconButton(
                           tooltip: '关闭',
+                          focusNode: _sheetCloseNode,
                           onPressed: () => Navigator.pop(context),
                           icon: const Icon(Icons.close_rounded),
                         ),
@@ -4133,6 +4172,20 @@ class _FeedPageState extends State<_FeedPage> with WidgetsBindingObserver {
       );
       gridController.jumpTo(target);
     });
+    // 0.9.5（TV）：TV 布局下打开弹窗后自动聚焦当前集，遥控才能
+    // 用方向键在集数间移动、OK 选中。普通 InkWell 无 autofocus 时
+    // bottom sheet 路由不会聚焦任何子项，遥控上下左右全部无响应。
+    // 同时用显式网格导航（index ± columns）——GridView 默认方向遍历
+    // 对跨行移动不可靠（几何近邻 + 惰性构建），与详情页 RemoteGrid 同款手法。
+    final television = AppLayout.isTelevision(context);
+    final sheetNodes = {
+      for (var i = 0; i < episodes.length; i++) i: FocusNode(debugLabel: 'feed-episode-$i'),
+    };
+    if (television) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        sheetNodes[currentIndex]?.requestFocus();
+      });
+    }
     final value = await showModalBottomSheet<int>(
       context: context,
       useRootNavigator: _sheetUsesRootNavigator,
@@ -4140,57 +4193,150 @@ class _FeedPageState extends State<_FeedPage> with WidgetsBindingObserver {
       shape: const RoundedRectangleBorder(
         borderRadius: BorderRadius.vertical(top: Radius.circular(16)),
       ),
-      builder: (context) => _sheetShell(
+      builder: (sheetContext) => _sheetShell(
         title: '选集 · 共 ${episodes.length} 集',
-        child: SizedBox(
-          height: MediaQuery.sizeOf(context).height * .6,
-          child: GridView.builder(
-            controller: gridController,
-            padding: const EdgeInsets.fromLTRB(16, 16, 16, 20),
-            gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
-              crossAxisCount: columns,
-              mainAxisSpacing: 10,
-              crossAxisSpacing: 10,
-              childAspectRatio: 1.5,
-            ),
-            itemCount: episodes.length,
-            itemBuilder: (context, index) {
-              final selected = index == _episodeIndex;
-              const accent = Color(0xFFFF765F);
-              return InkWell(
-                key: ValueKey('episode-$index'),
-                onTap: () => Navigator.pop(context, index),
-                borderRadius: BorderRadius.circular(10),
-                child: Container(
-                  alignment: Alignment.center,
-                  decoration: BoxDecoration(
-                    color: selected ? accent : const Color(0xFF26272F),
-                    borderRadius: BorderRadius.circular(10),
-                    border: Border.all(
-                      color: selected ? accent : const Color(0xFF3A3B44),
-                    ),
-                  ),
-                  child: Text(
-                    // 方块内只显示集号，避免长标题把方块撑变形。
-                    '${episodes[index].number}',
-                    maxLines: 1,
-                    overflow: TextOverflow.ellipsis,
-                    style: TextStyle(
-                      color: selected ? Colors.white : const Color(0xFFB9B6C2),
-                      fontSize: 15,
-                      fontWeight: selected ? FontWeight.w700 : FontWeight.w500,
-                    ),
-                  ),
-                ),
-              );
-            },
-          ),
+        child: _episodeSheetGrid(
+          episodes: episodes,
+          columns: columns,
+          controller: gridController,
+          currentIndex: currentIndex,
+          television: television,
+          nodes: sheetNodes,
         ),
       ),
     );
     gridController.dispose();
+    for (final node in sheetNodes.values) {
+      node.dispose();
+    }
     if (value != null && mounted) await _playEpisode(value);
   });
+
+  /// 0.9.5（TV）：选集弹窗网格。TV 布局下每个集数块挂独立 FocusNode、
+  /// 打开时聚焦当前集、方向键经 [_episodeSheetGrid] 外层 Focus 做显式
+  /// index±columns 导航，聚焦行自动滚入视野；非 TV 保持原触屏网格不变。
+  Widget _episodeSheetGrid({
+    required List<Episode> episodes,
+    required int columns,
+    required ScrollController controller,
+    required int currentIndex,
+    required bool television,
+    required Map<int, FocusNode> nodes,
+  }) {
+    Widget grid = GridView.builder(
+      controller: controller,
+      padding: const EdgeInsets.fromLTRB(16, 16, 16, 20),
+      gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
+        crossAxisCount: columns,
+        mainAxisSpacing: 10,
+        crossAxisSpacing: 10,
+        childAspectRatio: 1.5,
+      ),
+      itemCount: episodes.length,
+      itemBuilder: (context, index) {
+        final selected = index == _episodeIndex;
+        const accent = Color(0xFFFF765F);
+        return InkWell(
+          key: ValueKey('episode-$index'),
+          focusNode: television ? nodes[index] : null,
+          // TV：聚焦行滚入视野（GridView + 手动焦点不会自动 ensureVisible）。
+          onFocusChange: television
+              ? (focused) {
+                  if (!focused) return;
+                  WidgetsBinding.instance.addPostFrameCallback((_) {
+                    if (!controller.hasClients) return;
+                    final row = index ~/ columns;
+                    const rowExtent = 86.0;
+                    final top = (row * rowExtent - rowExtent).clamp(
+                      0.0,
+                      controller.position.maxScrollExtent,
+                    );
+                    final bottom = (top + rowExtent * 3).clamp(
+                      0.0,
+                      controller.position.maxScrollExtent,
+                    );
+                    if (controller.offset > top) {
+                      controller.jumpTo(top);
+                    } else if (controller.offset <
+                        bottom - controller.position.viewportDimension) {
+                      controller.jumpTo(
+                        bottom - controller.position.viewportDimension,
+                      );
+                    }
+                  });
+                }
+              : null,
+          onTap: () => Navigator.pop(context, index),
+          borderRadius: BorderRadius.circular(10),
+          child: Container(
+            alignment: Alignment.center,
+            decoration: BoxDecoration(
+              color: selected ? accent : const Color(0xFF26272F),
+              borderRadius: BorderRadius.circular(10),
+              border: Border.all(
+                color: selected ? accent : const Color(0xFF3A3B44),
+              ),
+            ),
+            child: Text(
+              // 方块内只显示集号，避免长标题把方块撑变形。
+              '${episodes[index].number}',
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: TextStyle(
+                color: selected ? Colors.white : const Color(0xFFB9B6C2),
+                fontSize: 15,
+                fontWeight: selected ? FontWeight.w700 : FontWeight.w500,
+              ),
+            ),
+          ),
+        );
+      },
+    );
+    if (!television) {
+      return SizedBox(
+        height: MediaQuery.sizeOf(context).height * .6,
+        child: grid,
+      );
+    }
+    return Focus(
+      // 显式网格方向导航：按 index 增减 columns 移动，越过边界放行
+      // （如第一行按「上」交回系统，让 barrier/关闭按钮可达）。
+      onKeyEvent: (node, event) {
+        if (event is! KeyDownEvent && event is! KeyRepeatEvent) {
+          return KeyEventResult.ignored;
+        }
+        final key = event.logicalKey;
+        final focusedLabel =
+            FocusManager.instance.primaryFocus?.debugLabel ?? '';
+        if (!focusedLabel.startsWith('feed-episode-')) {
+          return KeyEventResult.ignored;
+        }
+        final current = int.tryParse(
+          focusedLabel.replaceFirst('feed-episode-', ''),
+        );
+        if (current == null) return KeyEventResult.ignored;
+        int? next;
+        if (key == LogicalKeyboardKey.arrowDown) {
+          if (current + columns < episodes.length) next = current + columns;
+        } else if (key == LogicalKeyboardKey.arrowUp) {
+          if (current - columns >= 0) next = current - columns;
+        } else if (key == LogicalKeyboardKey.arrowRight) {
+          if (current + 1 < episodes.length) next = current + 1;
+        } else if (key == LogicalKeyboardKey.arrowLeft) {
+          if (current - 1 >= 0) next = current - 1;
+        }
+        if (next != null) {
+          nodes[next]?.requestFocus();
+          return KeyEventResult.handled;
+        }
+        return KeyEventResult.ignored;
+      },
+      child: SizedBox(
+        height: MediaQuery.sizeOf(context).height * .6,
+        child: grid,
+      ),
+    );
+  }
 
   /// 选集网格列数：竖屏 4 列、横屏 8 列（横屏横向空间更大）。
   int get _episodeGridColumns {

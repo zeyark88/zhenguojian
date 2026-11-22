@@ -194,6 +194,96 @@ void main() {
     expect(tester.takeException(), isNull);
   });
 
+  testWidgets('TV：选集弹窗打开后焦点落在当前集，方向键可在集数间移动（0.9.5）', (tester) async {
+    tester.view.devicePixelRatio = 1;
+    tester.view.physicalSize = const Size(420, 880);
+    addTearDown(tester.view.resetDevicePixelRatio);
+    addTearDown(tester.view.resetPhysicalSize);
+
+    final store = await makeStore();
+    final repository = RouteRepository();
+    final player = ScriptedPlayer();
+    await tester.pumpWidget(
+      _tvHost(
+        Scaffold(
+          body: VerticalFeedScreen(
+            key: const ValueKey('feed'),
+            repository: repository,
+            store: store,
+            embedded: true,
+            singleDrama: FixtureRepository.free,
+            active: true,
+            playerFactory: () => Player(platformPlayer: player),
+            videoBuilder: (controls) => controls,
+          ),
+        ),
+      ),
+    );
+    for (var i = 0; i < 20; i++) {
+      await tester.pump(const Duration(milliseconds: 20));
+    }
+
+    // 下键进入控制条 → 右移到「选集」 → OK 打开弹窗。
+    await press(tester, LogicalKeyboardKey.arrowDown);
+    await tester.pump(const Duration(milliseconds: 200));
+    await press(tester, LogicalKeyboardKey.arrowRight);
+    await press(tester, LogicalKeyboardKey.arrowRight);
+    await tester.pump(const Duration(milliseconds: 120));
+    final episodesIcon = find
+        .descendant(
+          of: find.byKey(const ValueKey('feed-episodes')),
+          matching: find.byType(Icon),
+        )
+        .first;
+    final episodesNode = nodeInside(tester, episodesIcon);
+    if (!episodesNode.hasFocus) {
+      await press(tester, LogicalKeyboardKey.arrowRight);
+      await tester.pump(const Duration(milliseconds: 120));
+    }
+    expect(
+      nodeInside(tester, find
+          .descendant(
+            of: find.byKey(const ValueKey('feed-episodes')),
+            matching: find.byType(Icon),
+          )
+          .first).hasFocus,
+      isTrue,
+      reason: '应先聚焦到「选集」按钮（本用例前置步骤）',
+    );
+
+    await press(tester, LogicalKeyboardKey.enter);
+    await tester.pumpAndSettle();
+
+    // 弹窗已打开：当前集（第 1 集）应持有焦点。
+    expect(find.textContaining('选集'), findsWidgets);
+    final focusedLabel =
+        FocusManager.instance.primaryFocus?.debugLabel ?? '';
+    expect(
+      RegExp(r'^feed-episode-\d+$').hasMatch(focusedLabel),
+      isTrue,
+      reason: 'TV 上选集弹窗打开后，焦点应自动落在当前集按钮，实际：$focusedLabel',
+    );
+
+    // 右键：焦点移动到第 2 集。
+    await press(tester, LogicalKeyboardKey.arrowRight);
+    await tester.pump(const Duration(milliseconds: 150));
+    expect(
+      FocusManager.instance.primaryFocus?.debugLabel,
+      'feed-episode-1',
+      reason: '右键应把焦点从第 1 集移到第 2 集',
+    );
+
+    // 下键：焦点移动到下一行（第 1 + columns 集）。
+    await press(tester, LogicalKeyboardKey.arrowDown);
+    await tester.pump(const Duration(milliseconds: 150));
+    expect(
+      FocusManager.instance.primaryFocus?.debugLabel,
+      isNot('feed-episode-1'),
+      reason: '下键应在网格内跨行移动焦点',
+    );
+    expect(tester.takeException(), isNull);
+  });
+
   testWidgets('TV：播放中控制条隐藏时按下键直接拉出并聚焦（0.9.4 加固）', (tester) async {
     tester.view.devicePixelRatio = 1;
     tester.view.physicalSize = const Size(420, 880);
