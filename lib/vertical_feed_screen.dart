@@ -4181,10 +4181,39 @@ class _FeedPageState extends State<_FeedPage> with WidgetsBindingObserver {
     final sheetNodes = {
       for (var i = 0; i < episodes.length; i++) i: FocusNode(debugLabel: 'feed-episode-$i'),
     };
+    // 0.9.6（TV）：真机帧序与测试不同——sheet 首帧时目标集的 InkWell
+    // 可能尚未构建（GridView 惰性），requestFocus 对无 context 节点
+    // **静默失败**，之后网格内无任何焦点节点，方向键全部无响应
+    // （此前用户看到的橙色只是 selected 底色，不是焦点）。
+    // 改为多帧重试（滚动已先 jumpTo 到当前集附近，重试几帧内必可见），
+    // 全部失败时兜底聚焦关闭按钮，保证弹窗里永远有焦点可操作。
     if (television) {
-      WidgetsBinding.instance.addPostFrameCallback((_) {
-        sheetNodes[currentIndex]?.requestFocus();
-      });
+      var attempts = 0;
+      void focusCurrent() {
+        if (!mounted || _closed) return;
+        final node = sheetNodes[currentIndex];
+        if (node != null && node.context != null) {
+          node.requestFocus();
+          return;
+        }
+        if (attempts++ < 8) {
+          WidgetsBinding.instance.addPostFrameCallback((_) => focusCurrent());
+        } else {
+          _sheetCloseNode.requestFocus();
+        }
+      }
+      for (var frame = 0; frame < 3; frame++) {
+        WidgetsBinding.instance.addPostFrameCallback(
+          frame == 0 ? (_) => focusCurrent() : (_) {
+            // 第二、三帧兜底：若首帧聚焦过但被系统重置，重新补焦。
+            if (mounted &&
+                !_closed &&
+                FocusManager.instance.primaryFocus == null) {
+              focusCurrent();
+            }
+          },
+        );
+      }
     }
     final value = await showModalBottomSheet<int>(
       context: context,
@@ -4239,6 +4268,12 @@ class _FeedPageState extends State<_FeedPage> with WidgetsBindingObserver {
         return InkWell(
           key: ValueKey('episode-$index'),
           focusNode: television ? nodes[index] : null,
+          // 0.9.6（TV）：焦点高亮显式画边框——sheet 的 Theme 覆盖下
+          // InkWell 默认 focusColor 不可见，真机上焦点落上也看不出。
+          focusColor: const Color(0x33FFFFFF),
+          // 0.9.6（TV）：当前集作为路由首个可聚焦子项自动获焦
+          //（打开瞬间的 postFrame 重试是兜底，autofocus 是正路）。
+          autofocus: television && index == currentIndex,
           // TV：聚焦行滚入视野（GridView + 手动焦点不会自动 ensureVisible）。
           onFocusChange: television
               ? (focused) {
@@ -4309,6 +4344,15 @@ class _FeedPageState extends State<_FeedPage> with WidgetsBindingObserver {
         final focusedLabel =
             FocusManager.instance.primaryFocus?.debugLabel ?? '';
         if (!focusedLabel.startsWith('feed-episode-')) {
+          // 0.9.6：网格内当前没有焦点（聚焦重试全失败的极端情况）——
+          // 方向键进来时直接把焦点放到当前集起步，而不是放行丢失。
+          if (key == LogicalKeyboardKey.arrowDown ||
+              key == LogicalKeyboardKey.arrowUp ||
+              key == LogicalKeyboardKey.arrowRight ||
+              key == LogicalKeyboardKey.arrowLeft) {
+            nodes[currentIndex]?.requestFocus();
+            return KeyEventResult.handled;
+          }
           return KeyEventResult.ignored;
         }
         final current = int.tryParse(
