@@ -161,6 +161,22 @@ class _VerticalFeedScreenState extends State<VerticalFeedScreen>
 
   final _controller = PageController();
   final _focus = FocusNode(debugLabel: 'vertical-feed');
+
+  // 0.9.1（TV 遥控修复）：此前整页 [Focus._onKey] 把上/下键全部消费切剧、
+  // 确认键全部消费播放/暂停，底部控件条（进度行 + 倍速/清晰度/选集/
+  // 追剧/弹幕/投屏/连播）永远拿不到焦点，电视遥控无法选取。
+  //
+  // 控件条与播放状态都在子页（_FeedPageState）里，父级只持有 [_focus]。
+  // 因此采用与 [_pageTogglePlayback] 相同的上报协作：**当前活跃页**在
+  // 上报切集能力时顺带上报「遥控按键处理器」（详见 _FeedPageState
+  // 的 [_handleRemoteKey]），[_onKey] 先把按键交给它处理：
+  /// - 焦点已进入控件条 → 键盘方向交给系统遍历/按钮自身；
+  /// - 控件条可见且 TV 布局时「下」→ 聚焦控件条（倍速）；
+  /// - 确认键播放/暂停并顺带弹出控件条。
+  // 页面返回 handled 后父级不再执行默认的切剧/切部。
+  KeyEventResult Function(FocusNode surface, KeyEvent event)?
+  _pageRemoteKey;
+
   final _random = math.Random();
 
   /// 本次会话是否手动点过播放（0.7.3，`XQ-0107`）。
@@ -717,11 +733,16 @@ class _VerticalFeedScreenState extends State<VerticalFeedScreen>
     bool hasPrev = false,
     Future<void> Function()? playPrev,
     VoidCallback? playbackToggle,
+    KeyEventResult Function(FocusNode surface, KeyEvent event)? remoteKey,
   }) {
     if (_closed) return;
     _pagePlayNextEpisode = hasNext ? playNext : null;
     _pagePlayPrevEpisode = hasPrev ? playPrev : null;
     _pageTogglePlayback = playbackToggle;
+    // 0.9.1（TV）：同时记住本页的遥控按键处理器（_reportEpisodeState
+    // 只在 active 页触发，天然只有当前页在位；离场页处理器内部有
+    // mounted/_closed/active 三重防护）。
+    _pageRemoteKey = remoteKey;
   }
 
   /// 处理竖向拖拽结束时的滑动判定（仅在 PageView 被禁用滚动时生效）。
@@ -933,11 +954,33 @@ class _VerticalFeedScreenState extends State<VerticalFeedScreen>
   }
 
   /// 遥控器 / 键盘上下键切换、播放暂停。
+  ///
+  /// 0.9.1（TV 遥控修复）：上/下键原先全部被「切剧」消费、确认键全部被
+  /// 「播放/暂停」消费，底部控件条永远得不到焦点。现在先交由当前活跃页
+  /// 上报的 [_pageRemoteKey]（详见 _FeedPageState 的 [_handleRemoteKey]）
+  /// 处理「控件条焦点模型」——返回 handled 即结束：
+  /// - 焦点在**控件条内**：方向交给系统遍历/按钮自身，「上」在顶部区域回画面；
+  /// - 焦点在**画面**：TV 布局且控件条可见时「下」→ 聚焦控件条（不切剧）；
+  ///   确认键 = 播放/暂停 + 弹出控件条。
+  /// 页面未处理时维持原有默认行为（下=下一部、上=上一部、确认键播放/暂停），
+  /// 手机/桌面与旧版完全一致。
   KeyEventResult _onKey(FocusNode node, KeyEvent event) {
     if (event is! KeyDownEvent && event is! KeyRepeatEvent) {
       return KeyEventResult.ignored;
     }
     final key = event.logicalKey;
+    // 先交给当前活跃页（含控件条焦点模型）。
+    final pageResult = _pageRemoteKey?.call(node, event);
+    if (pageResult == KeyEventResult.handled) {
+      return KeyEventResult.handled;
+    }
+    // 0.9.1：焦点已在本页某个可交互子项上（如控件条按钮）时，
+    // 顶层的切剧/播放语义必须让位——否则「进入控件条后按上下仍会切剧」。
+    // 此时交给按钮自身（确认键）与系统方向遍历（方向键）。
+    final primary = FocusManager.instance.primaryFocus;
+    if (primary != null && primary != _focus) {
+      return KeyEventResult.ignored;
+    }
     // 播放 / 暂停：电视遥控器播放键、确认键（DPAD_CENTER）与空格。
     if (key == LogicalKeyboardKey.mediaPlayPause ||
         key == LogicalKeyboardKey.enter ||
@@ -1000,7 +1043,11 @@ class _VerticalFeedScreenState extends State<VerticalFeedScreen>
       focusNode: _focus,
       autofocus: true,
       onKeyEvent: _onKey,
-      child: ColoredBox(color: Colors.black, child: _body()),
+      child: ColoredBox(
+        key: const ValueKey('feed-focus-root'),
+        color: Colors.black,
+        child: _body(),
+      ),
     );
     if (widget.embedded) return content;
     final television = AppLayout.isTelevision(context);
@@ -1393,6 +1440,8 @@ class _SourceFeedFailure {
 ///
 /// 之所以用回调而不是 GlobalKey：GlobalKey 在同一 Widget 树中必须唯一，
 /// 若随"当前页"来回更换，Flutter 会搬移 State（含播放器）导致画面错乱。
+/// 0.9.1：`remoteKey` 为当前页的遥控按键处理器（TV 控件条焦点模型，
+/// 见 _FeedPageState 的 [_handleRemoteKey]），父级 [_onKey] 优先调用它。
 typedef EpisodeStateReporter =
     void Function(
       bool hasNext, {
@@ -1400,6 +1449,7 @@ typedef EpisodeStateReporter =
       bool hasPrev,
       Future<void> Function()? playPrev,
       VoidCallback? playbackToggle,
+      KeyEventResult Function(FocusNode surface, KeyEvent event)? remoteKey,
     });
 
 /// 单页：一个视频 + 播放控件 + 信息栏。
@@ -1532,6 +1582,47 @@ class _FeedPageState extends State<_FeedPage> with WidgetsBindingObserver {
   bool _ready = false;
   bool _panelOpen = false;
   bool _controlsVisible = true;
+
+  // 0.9.1（TV 遥控修复）：竖屏竖滑流的整页按键原先全部被父级
+  // （_VerticalFeedScreenState._onKey）把上/下键消费切剧、确认键消费
+  // 播放/暂停，本页底部控件条（进度行 + 倍速/清晰度/选集/追剧/弹幕/
+  // 投屏/连播）永远拿不到焦点，电视遥控无法选取。
+  //
+  // 引入「画面焦点 ↔ 控件条焦点」二模型（[_handleRemoteKey] 经由
+  // [_reportEpisodeState] 上报给父级优先调用）：
+  // - [_firstSideNode]：竖屏「下」键进入控件条的落点（倍速按钮）；
+  // - [_controlsNode]：竖屏控件条容器标记（判断焦点是否在控件条内）；
+  // - [_sideRowNode]：竖屏底部功能按钮行标记（行内「上」交给默认遍历
+  //   到进度行，其余位置「上」回画面）；
+  // - [_fullscreenSurfaceFocus] / [_fullscreenFirstSideNode] /
+  //   [_fullscreenControlsNode] / [_fullscreenSideRowNode]：全屏层
+  //   （独立路由）同构四件套。全屏层自 0.2.28 起是独立路由，此前
+  //   根本没有任何按键监听，遥控在全屏内完全失效（见 [_onFullscreenKey]）。
+  final _firstSideNode = FocusNode(debugLabel: 'feed-first-side');
+  final _controlsNode = FocusNode(
+    debugLabel: 'feed-controls',
+    canRequestFocus: false,
+    skipTraversal: true,
+  );
+  final _sideRowNode = FocusNode(
+    debugLabel: 'feed-side-row',
+    canRequestFocus: false,
+    skipTraversal: true,
+  );
+  final _fullscreenSurfaceFocus = FocusNode(debugLabel: 'fullscreen-surface');
+  final _fullscreenFirstSideNode = FocusNode(
+    debugLabel: 'fullscreen-first-side',
+  );
+  final _fullscreenControlsNode = FocusNode(
+    debugLabel: 'fullscreen-controls',
+    canRequestFocus: false,
+    skipTraversal: true,
+  );
+  final _fullscreenSideRowNode = FocusNode(
+    debugLabel: 'fullscreen-side-row',
+    canRequestFocus: false,
+    skipTraversal: true,
+  );
 
   /// 窗口亮度下限（0.7.8，`XQ-0114`）：避免滑到全黑看不见。
   static const double _minBrightness = .05;
@@ -2547,6 +2638,14 @@ class _FeedPageState extends State<_FeedPage> with WidgetsBindingObserver {
       unawaited(SystemChrome.setEnabledSystemUIMode(SystemUiMode.edgeToEdge));
     }
     _releasePlayer();
+    // 0.9.1（TV 遥控）：释放遥控焦点模型相关节点。
+    _firstSideNode.dispose();
+    _controlsNode.dispose();
+    _sideRowNode.dispose();
+    _fullscreenSurfaceFocus.dispose();
+    _fullscreenFirstSideNode.dispose();
+    _fullscreenControlsNode.dispose();
+    _fullscreenSideRowNode.dispose();
     // 预载器（0.2.31）由**父级**持有并释放（0.6.9 改为全流共享），
     // 本页只借用，不负责 dispose。
     super.dispose();
@@ -2668,11 +2767,21 @@ class _FeedPageState extends State<_FeedPage> with WidgetsBindingObserver {
     // 加速中不自动隐藏（松开后由 _interactionChanged 恢复显示与计时）。
     if (_interactions?.boosting ?? false) return;
     if (!(_player?.state.playing ?? false)) return;
+    // 0.9.1（TV）：遥控器焦点在控件条里时不自动隐藏——
+    // 控件条一消失（ExcludeFocus 排除焦点），焦点会被强制弹回，
+    // 表现为"正在按钮间移动时整个栏突然没了"。退出焦点回到画面后
+    // 由 [_onKey]/[_onFullscreenKey] 重新排一次隐藏计时。
+    final controlsFocused =
+        _focusInside(_controlsNode) || _focusInside(_fullscreenControlsNode);
+    if (controlsFocused) return;
     _hideTimer = Timer(const Duration(seconds: 4), () {
       if (!mounted || _closed || _panelOpen) return;
       if (_seekValue != null) return;
       if (!(_player?.state.playing ?? false)) return;
       if (_interactions?.boosting ?? false) return;
+      if (_focusInside(_controlsNode) || _focusInside(_fullscreenControlsNode)) {
+        return;
+      }
       setState(() => _controlsVisible = false);
       // 用户操作，跳过节流立即刷新（0.3.1）。
       _refreshFullscreen(immediate: true);
@@ -2957,9 +3066,145 @@ class _FeedPageState extends State<_FeedPage> with WidgetsBindingObserver {
     }
   }
 
+  /// 当前焦点是否位于 [ancestor] 的子树内（含 ancestor 自身）。
+  bool _focusInside(FocusNode ancestor) {
+    FocusNode? node = FocusManager.instance.primaryFocus;
+    while (node != null) {
+      if (node == ancestor) return true;
+      node = node.parent;
+    }
+    return false;
+  }
+
+  /// 竖屏控件条当前是否可见（与 build 内使用的判据严格一致，
+  /// 抽成 getter 供遥控按键路径与 build 共用，防两处漂移）。
+  bool get _controlLayerVisible {
+    final boosting = _interactions?.boosting ?? false;
+    final playing = _player?.state.playing ?? false;
+    return !boosting &&
+        (_controlsVisible ||
+            _panelOpen ||
+            _loading ||
+            _error != null ||
+            !playing);
+  }
+
+  /// 全屏层控件条当前是否可见（与 [_buildFullscreenLayer] 内判据严格一致）。
+  bool get _fullscreenControlLayerVisible {
+    final boosting = _interactions?.boosting ?? false;
+    final playing = _player?.state.playing ?? false;
+    return !boosting &&
+        !_autoAdvancing && // 全屏层沿用 0.7.2：自动连播期间不弹控件。
+        (_controlsVisible || !playing || _loading);
+  }
+
+  /// 0.9.1（TV 遥控）：本页的遥控按键处理器，经 [_reportEpisodeState]
+  /// 上报，由父级 `_onKey` **优先**调用。处理「控件条焦点模型」：
+  ///
+  /// - 焦点在**控件条内**：方向键交给系统遍历（左右在按钮间移动、
+  ///   底部功能行内按「上」到进度行），确认键由按钮自身激活（不再
+  ///   触发播放/暂停）；在底部功能行**以外**（标题行/进度行）按「上」→
+  ///   回到画面焦点 [surface]（父级的 [_focus]）；
+  /// - 焦点在**画面**（即父级的 surface 节点）：确认/播放键 = 播放/暂停，
+  ///   并顺带弹出控件条（TV 上没有点击面）；**控件条可见且 TV 布局**时
+  ///   「下」→ 聚焦控件条首按钮（倍速），返回 handled（父级不再切剧）；
+  ///   其余情况返回 ignored，父级按原语义处理（下=下一部、上=上一部）。
+  KeyEventResult _handleRemoteKey(FocusNode surface, KeyEvent event) {
+    if (!mounted || _closed || !widget.active) {
+      return KeyEventResult.ignored;
+    }
+    final key = event.logicalKey;
+    // 焦点已在控件条内：仅拦截「上」返回画面，其余放行给系统遍历。
+    if (_focusInside(_controlsNode)) {
+      if (key == LogicalKeyboardKey.arrowUp && !_focusInside(_sideRowNode)) {
+        surface.requestFocus();
+        _scheduleHide();
+        return KeyEventResult.handled;
+      }
+      return KeyEventResult.ignored;
+    }
+    if (key == LogicalKeyboardKey.mediaPlayPause ||
+        key == LogicalKeyboardKey.enter ||
+        key == LogicalKeyboardKey.select ||
+        key == LogicalKeyboardKey.space) {
+      // 顺带把控件条拉出来：TV 没有点击面，暂停后控件常显；
+      // 播放中按确认键，用户下一步往往就是要操作进度/选集。
+      _showControls();
+      _togglePlayback();
+      return KeyEventResult.handled;
+    }
+    if (key == LogicalKeyboardKey.arrowDown ||
+        key == LogicalKeyboardKey.mediaTrackNext) {
+      // TV 布局：控件条可见时「下」优先进入控件条（不切剧）。
+      if (AppLayout.isTelevision(context) && _controlLayerVisible) {
+        if (_firstSideNode.canRequestFocus && _firstSideNode.context != null) {
+          _firstSideNode.requestFocus();
+          return KeyEventResult.handled;
+        }
+      }
+      return KeyEventResult.ignored;
+    }
+    return KeyEventResult.ignored;
+  }
+
+  /// 全屏层（独立路由）的遥控 / 键盘处理（0.9.1，TV 遥控修复）。
+  ///
+  /// 全屏层自 0.2.28 起是**独立路由**，此前完全没有按键监听：遥控器在
+  /// 全屏里播放/暂停、切集、聚焦控件条全部失效。行为与手机全屏手势对齐：
+  /// - 确认/播放键 = 播放/暂停，并顺带弹出控件条；
+  /// - 焦点在**画面**：TV 布局且控件条可见时「下」→ 聚焦控件条（倍速）；
+  ///   否则「下」= 下一、「上」= 上一（复用竖滑语义 [_swipeEpisode]：
+  ///   连播本剧/单剧模式切集，多剧模式切上/下一部，边界只轻提示）；
+  /// - 焦点在**控件条内**：方向键交给系统遍历，确认键由按钮自身激活；
+  ///   底部功能行以外按「上」→ 回画面。
+  KeyEventResult _onFullscreenKey(FocusNode node, KeyEvent event) {
+    if (event is! KeyDownEvent && event is! KeyRepeatEvent) {
+      return KeyEventResult.ignored;
+    }
+    final key = event.logicalKey;
+    if (_focusInside(_fullscreenControlsNode)) {
+      if (key == LogicalKeyboardKey.arrowUp &&
+          !_focusInside(_fullscreenSideRowNode)) {
+        _fullscreenSurfaceFocus.requestFocus();
+        _scheduleHide();
+        return KeyEventResult.handled;
+      }
+      return KeyEventResult.ignored;
+    }
+    if (key == LogicalKeyboardKey.mediaPlayPause ||
+        key == LogicalKeyboardKey.enter ||
+        key == LogicalKeyboardKey.select ||
+        key == LogicalKeyboardKey.space) {
+      _showControls();
+      _togglePlayback();
+      return KeyEventResult.handled;
+    }
+    if (key == LogicalKeyboardKey.arrowDown ||
+        key == LogicalKeyboardKey.mediaTrackNext) {
+      if (AppLayout.isTelevision(context) && _fullscreenControlLayerVisible) {
+        if (_fullscreenFirstSideNode.canRequestFocus &&
+            _fullscreenFirstSideNode.context != null) {
+          _fullscreenFirstSideNode.requestFocus();
+          return KeyEventResult.handled;
+        }
+      }
+      final feedback = _swipeEpisode(1);
+      if (feedback.startsWith('已经是')) _toast(feedback);
+      return KeyEventResult.handled;
+    }
+    if (key == LogicalKeyboardKey.arrowUp ||
+        key == LogicalKeyboardKey.mediaTrackPrevious) {
+      final feedback = _swipeEpisode(-1);
+      if (feedback.startsWith('已经是')) _toast(feedback);
+      return KeyEventResult.handled;
+    }
+    return KeyEventResult.ignored;
+  }
+
   /// 上报"本页还能否切到下一集"给父级，并附上切集入口。
   ///
   /// 只在当前页（active）时上报，避免预加载的非当前页覆盖状态。
+  /// 0.9.1：同时上报本页的遥控按键处理器（[_handleRemoteKey]）。
   void _reportEpisodeState() {
     if (!widget.active) return;
     final hasNext = canPlayNextEpisode;
@@ -2970,6 +3215,7 @@ class _FeedPageState extends State<_FeedPage> with WidgetsBindingObserver {
       hasPrev: hasPrev,
       playPrev: hasPrev ? playPrevEpisode : null,
       playbackToggle: _togglePlayback,
+      remoteKey: _handleRemoteKey,
     );
   }
 
@@ -4349,12 +4595,9 @@ class _FeedPageState extends State<_FeedPage> with WidgetsBindingObserver {
             final buffered = state?.buffer.inMilliseconds ?? 0;
             final total = duration > 0 ? duration / 1000 : 1.0;
             // 加速中只留中央提示，隐藏整套控件（与竖滑流主层保持一致）。
-            final boosting = _interactions?.boosting ?? false;
-            final controlsVisible =
-                !boosting &&
-                // 0.7.2（XQ-0104）：自动连播换集期间不弹进度条与按钮。
-                !_autoAdvancing &&
-                (_controlsVisible || !(state?.playing ?? false) || _loading);
+            // 0.9.1：判据抽为 [_fullscreenControlLayerVisible]，
+            // 供遥控按键路径与 build 共用。
+            final controlsVisible = _fullscreenControlLayerVisible;
             return Material(
               // 全屏路由已脱离竖滑页所在的主题树（push 到 Navigator 之上），
               // 因此这里必须显式给出深色主题，否则滑块会退回默认样式
@@ -4362,7 +4605,14 @@ class _FeedPageState extends State<_FeedPage> with WidgetsBindingObserver {
               color: Colors.black,
               child: Theme(
                 data: _fullscreenTheme,
-                child: Stack(
+                // 0.9.1（TV）：全屏层是独立路由，此前没有任何按键监听，
+                // 遥控器在全屏内完全失效。这里挂上画面焦点 + 键处理，
+                // 详见 [_onFullscreenKey]。
+                child: Focus(
+                  focusNode: _fullscreenSurfaceFocus,
+                  autofocus: true,
+                  onKeyEvent: _onFullscreenKey,
+                  child: Stack(
                   fit: StackFit.expand,
                   children: [
                     if (video != null)
@@ -4464,9 +4714,15 @@ class _FeedPageState extends State<_FeedPage> with WidgetsBindingObserver {
                         ),
                       ),
                     // 控件层：自动隐藏。
+                    // 0.9.1（TV）：隐藏时 ExcludeFocus 排除可达性，
+                    // 并挂 [_fullscreenControlsNode] 标记供按键路径判断。
                     IgnorePointer(
                       ignoring: !controlsVisible,
-                      child: AnimatedOpacity(
+                      child: ExcludeFocus(
+                        excluding: !controlsVisible,
+                        child: Focus(
+                          focusNode: _fullscreenControlsNode,
+                          child: AnimatedOpacity(
                         opacity: controlsVisible ? 1 : 0,
                         duration: const Duration(milliseconds: 180),
                         child: Stack(
@@ -4620,7 +4876,12 @@ class _FeedPageState extends State<_FeedPage> with WidgetsBindingObserver {
                                         ],
                                       ),
                                       ),
-                                      Row(
+                                      // 0.9.1（TV）：全屏底部功能行标记
+                                      // [_fullscreenSideRowNode]，首按钮挂
+                                      // [_fullscreenFirstSideNode]（下键落点）。
+                                      Focus(
+                                        focusNode: _fullscreenSideRowNode,
+                                        child: Row(
                                         mainAxisAlignment:
                                             MainAxisAlignment.spaceEvenly,
                                         children: [
@@ -4628,6 +4889,7 @@ class _FeedPageState extends State<_FeedPage> with WidgetsBindingObserver {
                                             key: const ValueKey(
                                               'fullscreen-speed',
                                             ),
+                                            focusNode: _fullscreenFirstSideNode,
                                             icon: Icons.speed_rounded,
                                             label: '${_speed}x',
                                             onPressed: _openSpeedMenu,
@@ -4707,6 +4969,7 @@ class _FeedPageState extends State<_FeedPage> with WidgetsBindingObserver {
                                             ),
                                         ],
                                       ),
+                                      ),
                                     ],
                                   ),
                                 ),
@@ -4715,6 +4978,8 @@ class _FeedPageState extends State<_FeedPage> with WidgetsBindingObserver {
                           ],
                         ),
                       ),
+                       ),
+                     ),
                     ),
                     // 长按加速提示（0.6.6 新增，用户反馈"**全屏横屏不显示这个悬浮窗**"）。
                     //
@@ -4749,6 +5014,7 @@ class _FeedPageState extends State<_FeedPage> with WidgetsBindingObserver {
                       ),
                   ],
                 ),
+              ),
               ),
             );
           },
@@ -4813,19 +5079,9 @@ class _FeedPageState extends State<_FeedPage> with WidgetsBindingObserver {
   Widget build(BuildContext context) {
     final video = _video;
     final state = _player?.state;
-    // 长按加速（3 倍速）期间只保留中央的加速提示，
-    // 必须把完整控件层（进度条 + 剧名 + 简介 + 按钮）整体隐藏，
-    // 否则加速时这些信息会盖住画面。
-    final boosting = _interactions?.boosting ?? false;
-    final visible =
-        !boosting &&
-        // 0.7.5：**非全屏（竖屏）连播保留控件显示**（用户明确要求），
-        // 静默只在全屏层生效（见全屏 `controlsVisible` 的 `!_autoAdvancing`）。
-        (_controlsVisible ||
-            _panelOpen ||
-            _loading ||
-            _error != null ||
-            !(state?.playing ?? false));
+    // 0.9.1：控件条可见判据抽为 [_controlLayerVisible] getter，
+    // 供遥控按键路径与 build 共用，避免两处漂移。
+    final visible = _controlLayerVisible;
     return Stack(
       fit: StackFit.expand,
       children: [
@@ -5001,9 +5257,16 @@ class _FeedPageState extends State<_FeedPage> with WidgetsBindingObserver {
             },
           ),
         // 控件层。
+        // 0.9.1（TV）：隐藏时除穿点事件，还需 ExcludeFocus 排除可达性，
+        // 防止遥控/键盘焦点落在不可见的按钮上；[_controlsNode] 标记
+        // 控件条子树，供 [_onKey] 判断“焦点是否已进入控件条”。
         IgnorePointer(
           ignoring: !visible,
-          child: AnimatedOpacity(
+          child: ExcludeFocus(
+            excluding: !visible,
+            child: Focus(
+              focusNode: _controlsNode,
+              child: AnimatedOpacity(
             opacity: visible ? 1 : 0,
             duration: const Duration(milliseconds: 180),
             // 进度条 / 时间 / 暂停按钮跟随 `_tick` 轻量重建（0.3.1）。
@@ -5190,12 +5453,18 @@ class _FeedPageState extends State<_FeedPage> with WidgetsBindingObserver {
                                 ],
                               ),
                               ),
-                              Row(
+                              // 0.9.1（TV）：底部功能按钮行统一挂
+                              // [_sideRowNode] 标记 —— 遥控器在本行内按“上”
+                              // 交给系统遍历到进度行，其余位置“上”回画面。
+                              Focus(
+                                focusNode: _sideRowNode,
+                                child: Row(
                                 mainAxisAlignment:
                                     MainAxisAlignment.spaceEvenly,
                                 children: [
                                   _sideButton(
                                     key: const ValueKey('feed-speed'),
+                                    focusNode: _firstSideNode,
                                     icon: Icons.speed_rounded,
                                     label: '${_speed}x',
                                     onPressed: _openSpeedMenu,
@@ -5260,19 +5529,22 @@ class _FeedPageState extends State<_FeedPage> with WidgetsBindingObserver {
                                           : Colors.white,
                                       onPressed: widget.onToggleAutoNext,
                                     ),
-                                ],
+                                 ],
+                               ),
                               ),
-                            ],
-                          ),
-                        ),
-                      ],
-                    ),
-                  ),
-                  ],
-                );
-              },
+                             ],
+                           ),
+                         ),
+                       ],
+                     ),
+                   ),
+                   ],
+                 );
+               },
+             ),
+           ),
+              ),
             ),
-          ),
         ),
       ],
     );
@@ -5295,12 +5567,15 @@ class _FeedPageState extends State<_FeedPage> with WidgetsBindingObserver {
     required String label,
     required VoidCallback onPressed,
     Color color = Colors.white,
+    // 0.9.1（TV）：供遥控「下键进入控件条」聚焦落点（首按钮传入）。
+    FocusNode? focusNode,
   }) => Expanded(
     child: Column(
       mainAxisSize: MainAxisSize.min,
       children: [
         IconButton(
           key: key,
+          focusNode: focusNode,
           tooltip: label,
           onPressed: onPressed,
           icon: Icon(icon, color: color, size: 24),

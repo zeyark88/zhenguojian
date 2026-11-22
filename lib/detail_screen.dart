@@ -48,6 +48,18 @@ class _DetailScreenState extends State<DetailScreen> {
   final _detailScroll = ScrollController();
   bool _initialActionHandled = false;
   late final int _profileEpoch;
+
+  // 0.9.1（TV 遥控修复）：详情是异步加载的，路由进入瞬间 `_loading` 仍为 true、
+  // 播放按钮为禁用态（InkWell canRequestFocus=false），FilledButton 的
+  // autofocus 在那一刻被跳过；此后数据就绪、按钮变为可用，但 autofocus 不会
+  // 重放——焦点停在路由级 FocusScope 上，遥控器上下左右全部失效
+  // （表现：选集区、底部下载/立即播放都无法聚焦）。
+  // 修复：播放按钮改用本 State 持有的 [_playNode]，加载完成后若本页
+  // 未持有焦点则补一次 requestFocus；[_screenKey] 用于判断焦点是否
+  // 已在本页子树内（刷新/从播放页返回时不抢焦点）。
+  final _screenKey = GlobalKey();
+  final _playNode = FocusNode(debugLabel: 'detail-start-play');
+
   Widget? get _sourceDiagnostics => widget.repository.supportsSourceManagement
       ? SourceDiagnosticsButton(
           repository: widget.repository,
@@ -76,6 +88,7 @@ class _DetailScreenState extends State<DetailScreen> {
   @override
   void dispose() {
     _detailScroll.dispose();
+    _playNode.dispose();
     widget.store.removeListener(_onStoreChanged);
     _generation++;
     super.dispose();
@@ -113,6 +126,8 @@ class _DetailScreenState extends State<DetailScreen> {
             ) ~/
             episodePageSize;
       });
+      // 0.9.1（TV）：详情加载完成后补落焦点（见 [_playNode] 注释）。
+      _focusPlayButtonOnTelevision();
       widget.repository.catalogUpdates.publish(merged, retryCover: true);
       unawaited(_supplement(merged, generation));
       await saveUserChange(context, () => widget.store.refreshDrama(merged));
@@ -149,6 +164,45 @@ class _DetailScreenState extends State<DetailScreen> {
         retryCover: true,
       );
     }
+  }
+
+  /// 0.9.1（TV）：详情异步加载完成后，把焦点落到底部播放按钮上。
+  ///
+  /// 仅在「本页子树内没有任何焦点」时补落（避免与用户当前焦点打架，
+  /// 例如手动刷新时焦点停在刷新按钮上、或从播放页返回时路由会自动
+  /// 恢复原焦点）。根因见 [_playNode] 声明处注释。
+  void _focusPlayButtonOnTelevision() {
+    bool focusInsideScreen() {
+      final screen = _screenKey.currentContext;
+      if (screen == null) return true; // 拿不到页面上下文时保守起见不抢焦点。
+      var inside = false;
+      FocusManager.instance.primaryFocus?.context?.visitAncestorElements(
+        (element) {
+          if (element == screen) {
+            inside = true;
+            return false; // 已命中，停止遍历。
+          }
+          return true;
+        },
+      );
+      if (!inside && FocusManager.instance.primaryFocus?.context == screen) {
+        inside = true;
+      }
+      return inside;
+    }
+
+    if (!mounted || _loading || (_detail?.episodes.isEmpty ?? true)) return;
+    if (_profileEpoch != widget.store.profileEpoch) return;
+    if (!AppLayout.isTelevision(context)) return;
+    if (focusInsideScreen()) return;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted || _playNode.context == null || !_playNode.canRequestFocus) {
+        return;
+      }
+      // 回调触发前焦点可能已被用户接手，仍需复核一次。
+      if (focusInsideScreen()) return;
+      _playNode.requestFocus();
+    });
   }
 
   Future<void> _supplement(Drama drama, int generation) async {
@@ -308,6 +362,7 @@ class _DetailScreenState extends State<DetailScreen> {
             Navigator.of(context).maybePop(),
       },
       child: Scaffold(
+        key: _screenKey,
         appBar: AppBar(
           toolbarHeight: television ? 64 : null,
           title: Text(drama.title, overflow: TextOverflow.ellipsis),
@@ -460,6 +515,7 @@ class _DetailScreenState extends State<DetailScreen> {
                       Expanded(
                         child: FilledButton.icon(
                           key: const ValueKey('start-play'),
+                          focusNode: _playNode,
                           autofocus: television,
                           style: FilledButton.styleFrom(
                             minimumSize: const Size(0, 52),
